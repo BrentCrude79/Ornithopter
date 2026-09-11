@@ -136,7 +136,7 @@ ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 | `--upstream` | `muse-spark-1.3-contributor-free` | Real Zen model id to forward to. Free-tier only unless `--allow-paid`. |
 | `--allow-paid` | off | Disable the free-tier-only guard. Students: leave it off — paid IDs can spend real credits. |
 | `--direct` | off | Disable Messages→Responses translation (rename-and-forward only). For models speaking `/messages` natively, or debugging. |
-| `--probe` | | Test every free-tier model with a minimal request using your key; report per-model status. Free IDs only — never spends. Then exit. |
+| `--probe` | | Try every free-tier model on `/messages`, `/chat/completions`, and `/responses` with your key; report which path serves. Free IDs only — never spends. Then exit. |
 | `--fallback` | _(none)_ | Comma-separated fallback Zen model IDs, first-last priority. On 429, 5xx, timeout, or connection error the request is retried with the next ID. |
 | `--list-models` | | Print the live upstream catalog (one ID per line) and exit. |
 | `--launch` | off | Launch the Claude app once the proxy is healthy. Target from `--launch-target` (or ini). |

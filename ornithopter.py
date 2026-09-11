@@ -187,9 +187,33 @@ def ini_path():
     return os.path.join(script_dir(), INI_NAME)
 
 
+def probe_once(base, path, body, key, timeout=60):
+    """One probe request. Returns (status, detail)."""
+    req = urllib.request.Request(
+        base + path, data=json.dumps(body).encode(), method="POST")
+    req.add_header("User-Agent", "curl/8.0")
+    req.add_header("Content-Type", "application/json")
+    if path == "/messages":
+        req.add_header("anthropic-version", "2023-06-01")
+    if key:
+        req.add_header("x-api-key", key)
+        req.add_header("Authorization", "Bearer " + key)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, ""
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read()[:160].decode("utf-8", errors="replace")
+        except Exception:
+            detail = ""
+        return e.code, detail
+    except Exception as e:
+        return -1, str(e)[:120]
+
+
 def probe_models(cfg):
-    """Send one minimal request per free-tier model with the configured
-    key and report what serves. Free IDs only — never spends."""
+    """Try every free-tier model on every endpoint shape with the
+    configured key and report what serves where. Free IDs only."""
     live = fetch_live_ids(cfg["upstream_base"])
     if live is None:
         print("error: could not fetch the live catalog", file=sys.stderr)
@@ -198,45 +222,52 @@ def probe_models(cfg):
     if not free:
         print("no free-tier models in the live catalog")
         return 1
-    print("%d free-tier models; probing with minimal requests..." % len(free))
+    print("%d free-tier models; probing messages/chat/responses..."
+          % len(free))
+    mini_messages = {"model": "probe", "max_tokens": 1,
+                     "messages": [{"role": "user", "content": "."}]}
     auth_failures = 0
     for mid in free:
+        attempts = []
+        translated = anthropic_to_responses(dict(mini_messages, model=mid),
+                                            mid)
+        chat = {"model": mid, "max_tokens": 1,
+                "messages": [{"role": "user", "content": "."}]}
         if needs_responses_transport(mid):
-            body = anthropic_to_responses(
-                {"model": mid, "max_tokens": 1,
-                 "messages": [{"role": "user", "content": "."}]}, mid)
-            path = "/responses"
+            attempts = [("/responses", translated),
+                        ("/messages", dict(mini_messages, model=mid)),
+                        ("/chat/completions", chat)]
         else:
-            body = {"model": mid, "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "."}]}
-            path = "/messages"
-        req = urllib.request.Request(
-            cfg["upstream_base"] + path,
-            data=json.dumps(body).encode(), method="POST")
-        req.add_header("User-Agent", "curl/8.0")
-        req.add_header("Content-Type", "application/json")
-        if path == "/messages":
-            req.add_header("anthropic-version", "2023-06-01")
-        if cfg["key"]:
-            req.add_header("x-api-key", cfg["key"])
-            req.add_header("Authorization", "Bearer " + cfg["key"])
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                print("%-42s HTTP %s (serves)" % (mid, r.status), flush=True)
-        except urllib.error.HTTPError as e:
-            try:
-                detail = e.read()[:160].decode("utf-8", errors="replace")
-            except Exception:
-                detail = ""
-            print("%-42s HTTP %s %s" % (mid, e.code, detail), flush=True)
-            if e.code == 401:
+            attempts = [("/messages", dict(mini_messages, model=mid)),
+                        ("/chat/completions", chat),
+                        ("/responses", translated)]
+        served = None
+        notes = []
+        first_detail = ""
+        for path, body in attempts:
+            status, detail = probe_once(cfg["upstream_base"], path, body,
+                                        cfg["key"])
+            if status == 200:
+                served = path
+                break
+            notes.append("%s=%s" % (path, status
+                                    if status != -1 else "ERR"))
+            if detail and not first_detail:
+                first_detail = detail
+            if status == 401:
                 auth_failures += 1
-                if auth_failures >= 2:
-                    print("key rejected twice; stopping.", file=sys.stderr)
+                if auth_failures >= 3:
+                    print("key rejected repeatedly; stopping.",
+                          file=sys.stderr)
                     return 1
-        except Exception as e:
-            print("%-42s ERROR %s" % (mid, e), flush=True)
-        time.sleep(0.5)
+            time.sleep(0.5)
+        if served:
+            print("%-42s serves via %-18s" % (mid, served), flush=True)
+        else:
+            print("%-42s no path (%s)" % (mid, " ".join(notes)), flush=True)
+            if first_detail:
+                print("    e.g. %s" % first_detail[:160], flush=True)
+            time.sleep(0.5)
     return 0
 
 
