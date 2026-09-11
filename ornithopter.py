@@ -26,10 +26,21 @@ import sys
 import urllib.request
 import urllib.error
 
+# Model names Claude Code accepts today (client-facing --override
+# namespace). These are official Anthropic API IDs, independent of what
+# any gateway serves — the proxy rewrites them to real Zen IDs.
+CLAUDE_CODE_MODELS = [
+    "claude-opus-4-1",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-0",
+    "claude-haiku-4-5",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+]
 # Claude-family model IDs actually served by Zen (audited 2026-09-11
 # against https://opencode.ai/zen/v1/models, 70-model catalog).
-# --override warns when given a name outside this list so examples and
-# error paths never advertise a model Zen doesn't serve.
+# Validates --upstream, which must exist or inference fails.
 ZEN_CLAUDE_IDS = [
     "claude-fable-5",
     "claude-fable-5-1",
@@ -199,10 +210,16 @@ def make_handler(cfg):
 
 def main(argv=None):
     args = parse_args(argv)
-    if args.override not in ZEN_CLAUDE_IDS:
-        print("warning: --override '%s' is not a Claude model served by "
-              "Zen; Claude Code may reject it. Served: %s"
-              % (args.override, ", ".join(ZEN_CLAUDE_IDS)),
+    if args.override not in CLAUDE_CODE_MODELS:
+        print("warning: --override '%s' is not a model name Claude Code "
+              "accepts; it may reject it. Accepts: %s"
+              % (args.override, ", ".join(CLAUDE_CODE_MODELS)),
+              file=sys.stderr)
+    upstream = args.upstream or args.override
+    if upstream not in ZEN_CLAUDE_IDS and not upstream.endswith("-free"):
+        print("warning: --upstream '%s' is not a Claude model served by "
+              "Zen; inference will fail. Served: %s"
+              % (upstream, ", ".join(ZEN_CLAUDE_IDS)),
               file=sys.stderr)
     cfg = {"override": args.override,
            "upstream": args.upstream or args.override,
