@@ -33,7 +33,7 @@ import time
 import urllib.request
 import urllib.error
 
-__version__ = "1.7.6"
+__version__ = "1.7.7"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
@@ -1020,14 +1020,20 @@ def make_handler(cfg):
         def _models_payload(self):
             return self._catalog_payload()
 
+        def _route_path(self):
+            # Tolerate trailing slashes and query strings: gateways probe
+            # /v1/models?x=1 or /v1/models/ and exact-matching those 404s.
+            return self.path.split("?", 1)[0].rstrip("/") or "/"
+
         def do_GET(self):
-            if self.path in ("/v1/models", "/models"):
+            path = self._route_path()
+            if path in ("/v1/models", "/models"):
                 self._send_json(self._models_payload())
-            elif self.path in ("/api/tags", "/api/ps"):
+            elif path in ("/api/tags", "/api/ps"):
                 # Ollama-style catalog for clients that read it.
                 self._send_json({"models": self._catalog_payload()[
                     "models"]})
-            elif self.path in ("/", "/health", "/v1/health"):
+            elif path in ("/", "/health", "/v1/health"):
                 self._send_json({"status": "ok", "override": cfg["override"],
                                  "upstream": cfg["upstream"],
                                  "fallbacks": cfg["fallbacks"]})
@@ -1336,12 +1342,13 @@ def make_handler(cfg):
                              "detail": str(last_error)}, 502)
 
         def do_POST(self):
-            if self.path in ("/v1/messages", "/messages"):
+            path = self._route_path()
+            if path in ("/v1/messages", "/messages"):
                 self._forward("/messages")
-            elif self.path in ("/v1/chat/completions",
-                               "/chat/completions"):
+            elif path in ("/v1/chat/completions",
+                          "/chat/completions"):
                 self._forward("/chat/completions")
-            elif self.path in ("/v1/responses", "/responses"):
+            elif path in ("/v1/responses", "/responses"):
                 self._forward("/responses")
             else:
                 self._send_json({"error": "not found"}, 404)

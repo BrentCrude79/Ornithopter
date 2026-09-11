@@ -352,6 +352,8 @@ tells you which side rejected it:
   mislabeled.
 - Threaded server: one thread per connection (30s idle timeout), so an
   idle keep-alive socket can never wedge later requests into timeouts.
+- Tolerant routing: trailing slashes and query strings (`/v1/models/`,
+  `/v1/models?x=1`) route instead of 404ing.
 
 ## Limitations
 
