@@ -20,9 +20,15 @@ model id -> forwards to <upstream-base>/messages with your Zen key ->
 streams the upstream response back untouched.
 """
 import argparse
+import configparser
 import json
 import os
+import shutil
+import socket
+import subprocess
 import sys
+import threading
+import time
 import urllib.request
 import urllib.error
 
@@ -30,6 +36,7 @@ import urllib.error
 # namespace). These are official Anthropic API IDs, independent of what
 # any gateway serves — the proxy rewrites them to real Zen IDs.
 CLAUDE_CODE_MODELS = [
+    "claude-opus-4-5",
     "claude-opus-4-1",
     "claude-sonnet-4-5",
     "claude-sonnet-4-0",
@@ -54,7 +61,9 @@ def parse_args(argv=None):
                + ". --upstream takes any Zen model ID "
                  "(e.g. claude-sonnet-4-5, muse-spark-1.3-contributor-free); "
                  "see https://opencode.ai/zen/v1/models or GET /v1/models "
-                 "while running. --list-models prints the live catalog.",
+                 "while running. --list-models prints the live catalog. "
+                 "Options load from ornithopter.ini next to the script; "
+                 "CLI flags win; --save writes them.",
     )
     p.add_argument("--key", default=os.environ.get("ZEN_API_KEY", ""),
                    help="Zen API key (or set ZEN_API_KEY env var). "
@@ -79,11 +88,124 @@ def parse_args(argv=None):
     p.add_argument("--list-models", action="store_true",
                    help="Print the live upstream model catalog (one ID per "
                         "line) and exit.")
+    p.add_argument("--launch", action="store_true",
+                   help="Launch the Claude app once the proxy is healthy. "
+                        "Target comes from --launch-target (or the ini).")
+    p.add_argument("--launch-target", default="",
+                   help="What to launch: an exe / Store alias / protocol "
+                        "(e.g. claude) or a UWP AppID containing '!' "
+                        "(launched via shell:AppsFolder). Setting this "
+                        "implies --launch. (default: claude)")
+    p.add_argument("--save", action="store_true",
+                   help="Save the effective options to ornithopter.ini "
+                        "next to the script, then keep running.")
+    p.add_argument("--no-config", action="store_true",
+                   help="Ignore ornithopter.ini even if present.")
     p.add_argument("--host", default="127.0.0.1",
                    help="Bind address. (default: %(default)s)")
     p.add_argument("--port", type=int, default=8646,
                    help="Bind port. (default: %(default)s)")
     return p.parse_args(argv)
+
+
+INI_NAME = "ornithopter.ini"
+INI_SECTION = "ornithopter"
+# Option keys persisted to the ini (never the API key).
+INI_KEYS = ("override", "upstream", "fallback", "launch", "launch_target",
+            "host", "port")
+
+
+def script_dir():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def ini_path():
+    return os.path.join(script_dir(), INI_NAME)
+
+
+def overlay_ini(args, argv=None):
+    """Fill options from ornithopter.ini when the flag wasn't passed
+    on the CLI (CLI flags win over ini over built-in defaults)."""
+    if args.no_config:
+        return args
+    cp = configparser.ConfigParser()
+    if not os.path.exists(ini_path()) or not cp.read(ini_path()):
+        return args
+    if not cp.has_section(INI_SECTION):
+        return args
+    ini = cp[INI_SECTION]
+    tokens = argv if argv is not None else sys.argv[1:]
+
+    def given(key):
+        flag = "--" + key.replace("_", "-")
+        return any(t == flag or t.startswith(flag + "=") for t in tokens)
+
+    for key in ("override", "upstream", "fallback", "launch_target", "host"):
+        if not given(key) and ini.get(key):
+            setattr(args, key, ini.get(key))
+    if not given("port") and ini.get("port"):
+        try:
+            args.port = int(ini.get("port") or 8646)
+        except ValueError:
+            pass
+    if not given("launch") and ini.getboolean("launch", fallback=False):
+        args.launch = True
+    return args
+
+
+def save_ini(args, cfg):
+    """Persist the effective options (never the key) next to the script."""
+    cp = configparser.ConfigParser()
+    cp[INI_SECTION] = {
+        "override": cfg["override"],
+        "upstream": args.upstream,
+        "fallback": args.fallback,
+        "launch": str(bool(args.launch or args.launch_target)),
+        "launch_target": args.launch_target,
+        "host": args.host,
+        "port": str(args.port),
+    }
+    try:
+        with open(ini_path(), "w") as f:
+            cp.write(f)
+        print("saved %s" % ini_path(), flush=True)
+    except OSError as e:
+        print("could not save %s: %s" % (ini_path(), e), file=sys.stderr)
+
+
+def wait_healthy(host, port, timeout=15):
+    deadline = time.time() + timeout
+    url = "http://%s:%d/health" % (host, port)
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            time.sleep(0.3)
+    return False
+
+
+def launch_app(target):
+    """Open the Claude app. UWP AppIDs (containing '!') go through
+    shell:AppsFolder; anything else via the shell (exe, Store alias,
+    protocol, URL). Non-Windows: exec if found on PATH."""
+    target = target or "claude"
+    print("launching: %s" % target, flush=True)
+    try:
+        if os.name == "nt":
+            if "!" in target and "://" not in target:
+                if not target.lower().startswith("shell:"):
+                    target = "shell:AppsFolder\\" + target
+                subprocess.Popen(["explorer.exe", target])
+            else:
+                subprocess.Popen(["cmd", "/c", "start", "", target])
+        elif shutil.which(target):
+            subprocess.Popen([target])
+        else:
+            subprocess.Popen(target, shell=True)
+    except Exception as e:
+        print("launch failed: %s" % e, file=sys.stderr)
 
 
 def make_handler(cfg):
@@ -242,6 +364,7 @@ def make_handler(cfg):
 
 def main(argv=None):
     args = parse_args(argv)
+    args = overlay_ini(args, argv)
     if args.override not in CLAUDE_CODE_MODELS:
         print("warning: --override '%s' is not a model name Claude Code "
               "accepts; it may reject it. Accepts: %s"
@@ -271,15 +394,31 @@ def main(argv=None):
               file=sys.stderr)
     from http.server import HTTPServer
     handler = make_handler(cfg)
+    if args.save:
+        save_ini(args, cfg)
     srv = HTTPServer((args.host, args.port), handler)
     print("ornithopter on http://%s:%d  override=%s  upstream=%s  "
           "key=%s" % (args.host, args.port, cfg["override"],
                       cfg["upstream"],
                       "set" if cfg["key"] else "missing"), flush=True)
+    launch_active = bool(args.launch or args.launch_target)
+    if launch_active:
+        serving = threading.Thread(target=srv.serve_forever, daemon=True)
+        serving.start()
+        if wait_healthy(args.host, args.port):
+            launch_app(args.launch_target or "claude")
+        else:
+            print("proxy did not become healthy; not launching.",
+                  file=sys.stderr)
     try:
-        srv.serve_forever()
+        if launch_active:
+            threading.Event().wait()
+        else:
+            srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        srv.server_close()
 
 
 if __name__ == "__main__":

@@ -112,6 +112,12 @@ python ornithopter.py --key sk-zen-... \
 # See what's actually on Zen right now (catalog rotates)
 python ornithopter.py --list-models
 
+# Save your setup and auto-launch the Claude app on future runs
+python ornithopter.py --key sk-zen-... \
+  --override claude-sonnet-4-5 --upstream muse-spark-1.3-contributor-free \
+  --fallback claude-sonnet-4-5 --launch --save
+# next time: just `python ornithopter.py --key sk-zen-...` (or set ZEN_API_KEY)
+
 # Custom port / key from environment
 ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 ```
@@ -125,6 +131,10 @@ ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 | `--upstream` | same as `--override` | Real Zen model ID forwarded to (`claude-sonnet-4-5`, `muse-spark-1.3-contributor-free`, …). Any Zen ID allowed — never validated. |
 | `--fallback` | _(none)_ | Comma-separated fallback Zen model IDs, first-last priority. On 429, 5xx, timeout, or connection error the request is retried with the next ID. |
 | `--list-models` | | Print the live upstream catalog (one ID per line) and exit. |
+| `--launch` | off | Launch the Claude app once the proxy is healthy. Target from `--launch-target` (or ini). |
+| `--launch-target` | `claude` | What to launch: exe / Store alias / protocol, or a UWP AppID containing `!` (via `shell:AppsFolder`). Setting it implies `--launch`. |
+| `--save` | | Save effective options to `ornithopter.ini` next to the script, then keep running. Key is never saved. |
+| `--no-config` | | Ignore `ornithopter.ini` even if present. |
 | `--upstream-base` | `https://opencode.ai/zen/v1` | Upstream base URL (override for testing). |
 | `--host` | `127.0.0.1` | Bind address. Loopback by default; nothing is exposed to the LAN. |
 | `--port` | `8646` | Bind port. |
@@ -159,11 +169,51 @@ response bytes flow; once upstream returns 200 the proxy commits to it.
 If every candidate fails you get `502 {"error": "all upstreams failed"}`
 with the last error attached. `/health` reports the active chain.
 
+## Config file (`ornithopter.ini`)
+
+Options persist in `ornithopter.ini`, stored next to the script
+(wherever `ornithopter.py` lives, not the working directory).
+Precedence: **CLI flags > ini > built-in defaults**. `--save` writes
+the effective options; `--no-config` ignores the file.
+
+```ini
+[ornithopter]
+override = claude-sonnet-4-5
+upstream = muse-spark-1.3-contributor-free
+fallback = claude-sonnet-4-5
+launch = True
+launch_target = claude
+host = 127.0.0.1
+port = 8646
+```
+
+The API key is **never** saved — it comes from `--key` or `ZEN_API_KEY`
+every run. You can also hand-edit the ini; it's plain configparser.
+
+## Auto-launch (`--launch`)
+
+With `--launch`, Ornithopter serves in the background, polls its own
+`/health` until the proxy answers, then opens the Claude app and keeps
+running until you Ctrl+C it.
+
+- Default target is `claude` (exe / Store execution alias / protocol —
+  whatever `start` resolves on your machine).
+- For the UWP Store app specifically, find its AppID in PowerShell:
+  `Get-StartApps | Where-Object {$_.Name -like '*Claude*'}` — then set
+  `launch_target` to that AppID (it contains a `!`, e.g.
+  `Anthropic.Claude_xxxx!App`) and Ornithopter launches it via
+  `shell:AppsFolder`.
+- Setting `--launch-target` implies `--launch`; both are ini-saveable,
+  so `--save` gives you double-click-to-fly behavior paired with the
+  `.bat` launcher.
+
 ## Verified behavior
 
 - `POST /v1/messages` with `model: claude-opus-4-5` reaches upstream as `model: claude-sonnet-4-5` (rewrite confirmed against a recording dummy server).
 - `GET /v1/models` against live Zen returns the override first + full catalog (70 entries).
 - SSE relay is chunk-forwarded, not buffered, so `stream: true` clients work.
+- `--save` writes `ornithopter.ini`; a bare rerun loads override/upstream/fallback/port from it; CLI flags beat ini; `--no-config` ignores it.
+- `--launch` waits for `/health` 200 before opening the target (verified with a harmless binary; the UWP `shell:AppsFolder` path is Windows-only and code-reviewed, not live-tested here).
 
 ## Limitations
 
