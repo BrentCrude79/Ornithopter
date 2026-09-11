@@ -26,15 +26,23 @@ import sys
 import urllib.request
 import urllib.error
 
-ANTHROPIC_CATALOG = [
-    "claude-opus-4-5",
-    "claude-opus-4-1",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-0",
+# Claude-family model IDs actually served by Zen (audited 2026-09-11
+# against https://opencode.ai/zen/v1/models, 70-model catalog).
+# --override warns when given a name outside this list so examples and
+# error paths never advertise a model Zen doesn't serve.
+ZEN_CLAUDE_IDS = [
+    "claude-fable-5",
+    "claude-fable-5-1",
     "claude-haiku-4-5",
-    "claude-3-5-sonnet-20241022",
-    "claude-3-5-haiku-20241022",
-    "claude-3-opus-20240229",
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "claude-sonnet-4",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
+    "claude-sonnet-5",
 ]
 
 
@@ -191,10 +199,10 @@ def make_handler(cfg):
 
 def main(argv=None):
     args = parse_args(argv)
-    if args.override not in ANTHROPIC_CATALOG:
-        print("warning: --override '%s' is not in the known Anthropic "
-              "catalog; Claude Code may reject it. Known: %s"
-              % (args.override, ", ".join(ANTHROPIC_CATALOG)),
+    if args.override not in ZEN_CLAUDE_IDS:
+        print("warning: --override '%s' is not a Claude model served by "
+              "Zen; Claude Code may reject it. Served: %s"
+              % (args.override, ", ".join(ZEN_CLAUDE_IDS)),
               file=sys.stderr)
     cfg = {"override": args.override,
            "upstream": args.upstream or args.override,
