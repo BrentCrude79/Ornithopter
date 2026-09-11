@@ -100,18 +100,13 @@ If Claude Code rejects the model, the name it sends doesn't equal `--override` â
 
 ```bash
 # Advertise Opus locally, run a free coding model on OpenRouter (default base)
-python ornithopter.py --key sk-or-... \
-  --override claude-opus-4-5 --upstream poolside/laguna-s-2.1:free
+python ornithopter.py --key sk-or-... --override claude-opus-4-5 --upstream poolside/laguna-s-2.1:free
 
 # Muse Spark on Zen instead (needs --upstream-base + Zen key)
-python ornithopter.py --key sk-zen-... \
-  --upstream-base https://opencode.ai/zen/v1 \
-  --override claude-sonnet-4-5 --upstream muse-spark-1.3-contributor-free
+python ornithopter.py --key sk-zen-... --upstream-base https://opencode.ai/zen/v1 --override claude-sonnet-4-5 --upstream muse-spark-1.3-contributor-free
 
 # Laguna first, Nemotron if it's rate-limited or down
-python ornithopter.py --key sk-or-... \
-  --override claude-sonnet-4-5 --upstream poolside/laguna-s-2.1:free \
-  --fallback nvidia/nemotron-3-ultra-550b-a55b:free
+python ornithopter.py --key sk-or-... --override claude-sonnet-4-5 --upstream poolside/laguna-s-2.1:free --fallback nvidia/nemotron-3-ultra-550b-a55b:free
 
 # Map what your key can actually run (free IDs only, minimal probes)
 python ornithopter.py --key sk-or-... --probe
@@ -120,9 +115,7 @@ python ornithopter.py --key sk-or-... --probe
 python ornithopter.py --list-models
 
 # Save your setup and auto-launch the Claude app on future runs
-python ornithopter.py --key sk-or-... \
-  --override claude-sonnet-4-5 --upstream poolside/laguna-s-2.1:free \
-  --fallback nvidia/nemotron-3-ultra-550b-a55b:free --launch --save
+python ornithopter.py --key sk-or-... --override claude-sonnet-4-5 --upstream poolside/laguna-s-2.1:free --fallback nvidia/nemotron-3-ultra-550b-a55b:free --launch --save
 # next time: just `python ornithopter.py` â€” everything (key included) loads from the ini
 
 # Custom port / key from environment
