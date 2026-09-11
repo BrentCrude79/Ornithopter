@@ -138,7 +138,7 @@ ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 | `--launch-target` | `claude` | What to launch: exe / Store alias / protocol, or a UWP AppID containing `!` (via `shell:AppsFolder`). Setting it implies `--launch`. |
 | `--save` | | Save effective options to `ornithopter.ini` next to the script, then keep running. |
 | `--no-config` | | Ignore `ornithopter.ini` even if present. |
-| `--verbose` | off | Log every request (method, path, model, upstream attempts) to stderr. Upstream failures always log. |
+| `--verbose` | off | Log every request (method, path, model, redacted headers, first 500 body chars, upstream attempts) to stderr. Upstream failures always log. |
 | `--upstream-base` | `https://opencode.ai/zen/v1` | Upstream base URL (override for testing). |
 | `--host` | `127.0.0.1` | Bind address. Loopback by default; nothing is exposed to the LAN. |
 | `--port` | `8646` | Bind port. |

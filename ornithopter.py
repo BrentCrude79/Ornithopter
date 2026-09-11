@@ -32,6 +32,8 @@ import time
 import urllib.request
 import urllib.error
 
+__version__ = "1.5.0"
+
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
 # any gateway serves — the proxy rewrites them to real Zen IDs.
@@ -151,6 +153,8 @@ def parse_args(argv=None):
                    help="Log every request (method, path, model, upstream "
                         "attempts and statuses) to stderr. Failures are "
                         "always logged.")
+    p.add_argument("--version", action="version", version="ornithopter "
+                   + __version__)
     p.add_argument("--host", default="127.0.0.1",
                    help="Bind address. (default: %(default)s)")
     p.add_argument("--port", type=int, default=8646,
@@ -402,6 +406,12 @@ def make_handler(cfg):
                             for k, v in self.headers.items()}
                     print("client headers: %r" % (hdrs,), flush=True,
                           file=sys.stderr)
+                    try:
+                        print("body: %r" % (raw[:500].decode("utf-8",
+                              errors="replace"),), flush=True,
+                              file=sys.stderr)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             problem = (validate_body(upstream_path, payload)
@@ -529,8 +539,8 @@ def main(argv=None):
     if args.save:
         save_ini(args, cfg)
     srv = HTTPServer((args.host, args.port), handler)
-    print("ornithopter on http://%s:%d  override=%s  upstream=%s  "
-          "key=%s" % (args.host, args.port, cfg["override"],
+    print("ornithopter v%s on http://%s:%d  override=%s  upstream=%s  "
+          "key=%s" % (__version__, args.host, args.port, cfg["override"],
                       cfg["upstream"],
                       "set" if cfg["key"] else "missing"), flush=True)
     launch_active = bool(args.launch or args.launch_target)
