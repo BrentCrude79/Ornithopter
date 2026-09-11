@@ -104,6 +104,14 @@ python ornithopter.py --key sk-zen-... \
 python ornithopter.py --key sk-zen-... \
   --override claude-sonnet-4-5 --upstream muse-spark-1.3-contributor-free
 
+# Muse Spark first, Sonnet if it's rate-limited or down
+python ornithopter.py --key sk-zen-... \
+  --override claude-sonnet-4-5 --upstream muse-spark-1.3-contributor-free \
+  --fallback claude-sonnet-4-5
+
+# See what's actually on Zen right now (catalog rotates)
+python ornithopter.py --list-models
+
 # Custom port / key from environment
 ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 ```
@@ -114,7 +122,9 @@ ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 |---|---|---|
 | `--key` | `$ZEN_API_KEY` | Zen API key, attached upstream as `x-api-key` + bearer. Local clients may send any placeholder. |
 | `--override` | `claude-sonnet-4-5` | Model name advertised in `/v1/models` and accepted from clients. Warns if not in the known Anthropic catalog. |
-| `--upstream` | same as `--override` | Real Zen model ID forwarded to (`claude-sonnet-4-5`, `muse-spark-1.3-contributor-free`, …). |
+| `--upstream` | same as `--override` | Real Zen model ID forwarded to (`claude-sonnet-4-5`, `muse-spark-1.3-contributor-free`, …). Any Zen ID allowed — never validated. |
+| `--fallback` | _(none)_ | Comma-separated fallback Zen model IDs, first-last priority. On 429, 5xx, timeout, or connection error the request is retried with the next ID. |
+| `--list-models` | | Print the live upstream catalog (one ID per line) and exit. |
 | `--upstream-base` | `https://opencode.ai/zen/v1` | Upstream base URL (override for testing). |
 | `--host` | `127.0.0.1` | Bind address. Loopback by default; nothing is exposed to the LAN. |
 | `--port` | `8646` | Bind port. |
@@ -137,6 +147,17 @@ ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 3. Request is forwarded to `<upstream-base>/messages` with your Zen key (`x-api-key` + `Authorization: Bearer`).
 4. Upstream response — including SSE event streams — is relayed byte-for-byte. Non-streaming bodies keep their `Content-Length`; streams are connection-close delimited.
 5. Upstream errors (e.g. 401 on a bad key) pass through with their original status and body.
+
+## Fallbacks
+
+`--fallback` takes Zen IDs in first-last priority order. A spoofed
+request tries `--upstream`, then each fallback in turn, when the
+previous attempt hits a rate-limit (429), a 5xx, a timeout, or a
+connection error. Other errors (401, 400, 404) pass straight through —
+retrying those is pointless. Failover happens per request, before any
+response bytes flow; once upstream returns 200 the proxy commits to it.
+If every candidate fails you get `502 {"error": "all upstreams failed"}`
+with the last error attached. `/health` reports the active chain.
 
 ## Verified behavior
 
