@@ -5,29 +5,30 @@
 *Flying. A cheap and flimsy way to fly — but it works.. mostly.*
 *Card: [Ornithopter (Antiquities) on Scryfall](https://scryfall.com/card/atq/60/ornithopter?utm_source=api) · Art by Amy Weber · Card art © Wizards of the Coast, image via Scryfall.*
 
-**Use OpenCode Zen models inside Claude Code — as a local inference point, under official Anthropic model names.**
+**Use free-tier models inside Claude Code — as a local inference point, under official Anthropic model names.**
 
-Claude Code only talks to the Anthropic API and only accepts official Anthropic model names. OpenCode [Zen](https://opencode.ai/docs/zen/) serves great models (including free ones like `muse-spark-1.3-contributor-free`) behind an OpenAI-style gateway with Zen-specific model IDs. Ornithopter bridges the gap: a zero-dependency local proxy on `127.0.0.1` that advertises an official Anthropic name, silently rewrites it to the real Zen model ID, and streams the response back untouched. Zero mana cost, zero dependencies — just a 0/2 flier held together with Thran spare parts.
+Claude Code only talks to the Anthropic API and only accepts official Anthropic model names. Ornithopter bridges the gap: a zero-dependency local proxy on `127.0.0.1` that advertises an official Anthropic name, silently rewrites it to a real free-tier model ID, translates between API dialects as needed, and streams the response back untouched. Default fuel is OpenRouter's `:free` tier (key-based, actually serves third parties); OpenCode Zen works too via `--upstream-base`. Zero mana cost, zero dependencies — just a 0/2 flier held together with spare parts.
 
 ```
-Claude Code  --->  http://127.0.0.1:8646  --->  https://opencode.ai/zen/v1
-  model:                 rewrite:                 real inference:
-  claude-sonnet-4-5  ->  claude-sonnet-4-5  ->  Zen (your API key)
+Claude Code  --->  http://127.0.0.1:8646  --->  https://openrouter.ai/api/v1
+  model:                 rewrite+translate:        real inference:
+  claude-sonnet-4-5  ->  poolside/laguna-s-2.1:free  ->  OpenRouter (your key)
 ```
 
 ## Why
 
 - **Claude Code compatibility.** Point `ANTHROPIC_BASE_URL` at localhost and keep using your normal model names.
-- **Name spoofing.** `--override` advertises any official Anthropic catalog name; the real Zen model is selected separately with `--upstream`.
-- **No key sprawl.** Your Zen key lives in one place (the proxy). Local apps use a dummy token.
+- **Name spoofing.** `--override` advertises any official Anthropic catalog name; the real free-tier model is selected separately with `--upstream`.
+- **No key sprawl.** Your upstream key lives in one place (the proxy). Local apps use a dummy token.
 - **Zero dependencies.** Python 3 stdlib only. Runs on Windows, macOS, Linux. No `pip install`, no venv, no Docker.
 
 ## Quick start
 
 ```bash
-# 1. Get a Zen API key: opencode.ai dashboard -> /connect (or `opencode auth login`)
+# 1. Get an upstream key: openrouter.ai → Keys (free-tier models serve
+#    key-only). Or a Zen key: opencode.ai dashboard -> /connect.
 # 2. Run (Windows: ornithopter.bat, same flags)
-python ornithopter.py --key sk-zen-...
+python ornithopter.py --key sk-or-...
 
 # 3. In another terminal, check it
 curl http://127.0.0.1:8646/v1/models
@@ -98,53 +99,55 @@ If Claude Code rejects the model, the name it sends doesn't equal `--override` �
 ## Examples
 
 ```bash
-# Advertise Opus locally, actually run a free Muse Spark on Zen
-python ornithopter.py --key sk-zen-... \
-  --override claude-opus-4-5 --upstream muse-spark-1.3-contributor-free
+# Advertise Opus locally, run a free coding model on OpenRouter (default base)
+python ornithopter.py --key sk-or-... \
+  --override claude-opus-4-5 --upstream poolside/laguna-s-2.1:free
 
-# Run a free Zen model behind a Sonnet name
+# Muse Spark on Zen instead (needs --upstream-base + Zen key)
 python ornithopter.py --key sk-zen-... \
+  --upstream-base https://opencode.ai/zen/v1 \
   --override claude-sonnet-4-5 --upstream muse-spark-1.3-contributor-free
 
-# Muse Spark first, Sonnet if it's rate-limited or down
-python ornithopter.py --key sk-zen-... \
-  --override claude-sonnet-4-5 --upstream muse-spark-1.3-contributor-free \
-  --fallback claude-sonnet-4-5
+# Laguna first, Nemotron if it's rate-limited or down
+python ornithopter.py --key sk-or-... \
+  --override claude-sonnet-4-5 --upstream poolside/laguna-s-2.1:free \
+  --fallback nvidia/nemotron-3-ultra-550b-a55b:free
 
 # Map what your key can actually run (free IDs only, minimal probes)
-python ornithopter.py --key sk-zen-... --probe
+python ornithopter.py --key sk-or-... --probe
 
-# See what's actually on Zen right now (catalog rotates)
+# See what's actually upstream right now (catalogs rotate)
 python ornithopter.py --list-models
 
 # Save your setup and auto-launch the Claude app on future runs
-python ornithopter.py --key sk-zen-... \
-  --override claude-sonnet-4-5 --upstream muse-spark-1.3-contributor-free \
-  --fallback claude-sonnet-4-5 --launch --save
+python ornithopter.py --key sk-or-... \
+  --override claude-sonnet-4-5 --upstream poolside/laguna-s-2.1:free \
+  --fallback nvidia/nemotron-3-ultra-550b-a55b:free --launch --save
 # next time: just `python ornithopter.py` — everything (key included) loads from the ini
 
 # Custom port / key from environment
-ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
+OPENROUTER_API_KEY=sk-or-... python ornithopter.py --port 9000
 ```
 
 ## CLI reference
 
 | Flag | Default | Description |
 |---|---|---|
-| `--key` | `$ZEN_API_KEY` | Zen API key, attached upstream as `x-api-key` + bearer. Local clients may send any placeholder. |
-| `--override` | `claude-sonnet-4-5` | Model name advertised in `/v1/models` and accepted from clients. Warns if not in the known Anthropic catalog. |
-| `--upstream` | `muse-spark-1.3-contributor-free` | Real Zen model id to forward to. Free-tier only unless `--allow-paid`. |
+| `--key` | `$OPENROUTER_API_KEY` / `$ZEN_API_KEY` | Upstream API key. Local clients may use any placeholder bearer. |
+| `--override` | `claude-sonnet-4-5` | Model name advertised locally and accepted from clients. Warns if not in the known Anthropic catalog. |
+| `--upstream` | `poolside/laguna-s-2.1:free` | Real model id to forward to. Free-tier only unless `--allow-paid`. |
 | `--allow-paid` | off | Disable the free-tier-only guard. Students: leave it off — paid IDs can spend real credits. |
 | `--direct` | off | Disable Messages→Responses translation (rename-and-forward only). For models speaking `/messages` natively, or debugging. |
 | `--probe` | | Try every free-tier model on `/messages`, `/chat/completions`, and `/responses` with your key; report which path serves. Free IDs only — never spends. Then exit. |
-| `--fallback` | _(none)_ | Comma-separated fallback Zen model IDs, first-last priority. On 429, 5xx, timeout, or connection error the request is retried with the next ID. |
+| `--fallback` | _(none)_ | Comma-separated fallback model IDs, first-last priority. On 429, 5xx, timeout, or connection error the request is retried with the next ID. |
 | `--list-models` | | Print the live upstream catalog (one ID per line) and exit. |
 | `--launch` | off | Launch the Claude app once the proxy is healthy. Target from `--launch-target` (or ini). |
 | `--launch-target` | `claude` | What to launch: exe / Store alias / protocol, or a UWP AppID containing `!` (via `shell:AppsFolder`). Setting it implies `--launch`. |
 | `--save` | | Save effective options to `ornithopter.ini` next to the script, then keep running. |
 | `--no-config` | | Ignore `ornithopter.ini` even if present. |
 | `--verbose` | off | Log every request (method, path, model, redacted headers, first 500 body chars, upstream attempts) to stderr. Upstream failures always log. |
-| `--upstream-base` | `https://opencode.ai/zen/v1` | Upstream base URL (override for testing). |
+| `--upstream-base` | `https://openrouter.ai/api/v1` | Upstream base URL (OpenRouter, Zen, or compatible). |
+| `--transport` | `auto` | Force the upstream API shape (`messages`, `chat`, `responses`) instead of detecting it. |
 | `--host` | `127.0.0.1` | Bind address. Loopback by default; nothing is exposed to the LAN. |
 | `--port` | `8646` | Bind port. |
 | `-h, --help` | | Full help. |
@@ -156,20 +159,20 @@ ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 | `POST /v1/messages` | Anthropic Messages API (what Claude Code uses). Model rewritten, SSE streamed through. |
 | `POST /v1/chat/completions` | OpenAI chat format, for other local tools. |
 | `POST /v1/responses` | OpenAI responses format. |
-| `GET /v1/models` | Override name first, then the live Zen catalog (70 models at time of writing). |
+| `GET /v1/models` | Override name first, then the live free-tier catalog. |
 | `GET /health` | `{"status": "ok", "override": …, "upstream": …}` |
 
 ## How it works
 
 1. Client sends an Anthropic request with `model: <override>`.
-2. Ornithopter rewrites `model` to the real Zen ID (`--upstream`).
-3. Request is forwarded to `<upstream-base>/messages` with your Zen key (`x-api-key` + `Authorization: Bearer`).
+2. Ornithopter rewrites `model` to the real upstream ID (`--upstream`).
+3. Request is forwarded (translated to the model's native API shape when needed) with your key (`x-api-key` + `Authorization: Bearer`).
 4. Upstream response — including SSE event streams — is relayed byte-for-byte. Non-streaming bodies keep their `Content-Length`; streams are connection-close delimited.
 5. Upstream errors (e.g. 401 on a bad key) pass through with their original status and body.
 
 ## Fallbacks
 
-`--fallback` takes Zen IDs in first-last priority order, and each one
+`--fallback` takes model IDs in first-last priority order, and each one
 is a real link in the chain: `--upstream A --fallback B,C,D` makes up
 to **four** attempts per spoofed request — A, then B, then C, then D.
 A link is skipped past when it hits a rate-limit (429), a 5xx, a
@@ -189,9 +192,9 @@ Ornithopter is built for classrooms: by default it can **never** route
 to a paid model, so it can never run up costs.
 
 - `--upstream` / `--fallback` must be free-tier IDs: verified against
-  the **live** Zen catalog at startup (must be listed *and* `-free`
-  suffixed, minus server-side keyed twins like `ox-alpha-free` —
-  Hermes's own exclusion, mirrored here). Violations refuse to start
+  the **live** catalog at startup (must be listed *and* `-free` (Zen)
+  or `:free` (OpenRouter) suffixed, minus server-side keyed twins
+  like `ox-alpha-free` — Hermes's own exclusion, mirrored here). Violations refuse to start
   (`exit 2`). Offline, it falls back to suffix checking with a warning.
 - The guard also covers **direct** model names: in free-only mode *every*
   requested model — dated IDs, aliases, anything Claude actually sends —
@@ -210,24 +213,24 @@ OpenCode`). A standalone localhost proxy can't mint that context, so a
 personal Zen key (free tier) remains required — the guard makes sure
 that key can only ever touch free models.
 
-## Messages↔Responses translation
+## Messages↔chat/responses translation
 
-Some Zen models (Muse Spark, GPT-, Grok- families — the same split
-Hermes uses internally) are served via the **Responses API**, not
-`/messages`. Pointing Claude's Messages calls at them returns Zen's
-opaque 500, so Ornithopter translates per attempt:
+Upstream models don't all speak Claude's dialect, so Ornithopter
+translates per attempt. Transport is auto-detected (spark/gpt/grok →
+Responses; everything on an OpenAI-compatible base like OpenRouter →
+chat; else native Messages) or forced with `--transport`:
 
-- **Request:** `system` → `instructions`, messages → `input`
-  (text/tool_use/tool_result/image blocks mapped), `max_tokens` →
-  `max_output_tokens`, tools + `tool_choice` converted, `stream`
-  passed through. The call goes to `/responses` with the real model ID.
-- **Response:** converted back to an Anthropic message (or Anthropic
-  SSE event stream: `message_start` → deltas → `message_delta` →
-  `message_stop` → `[DONE]`), with the *requested* model name echoed
-  so picky clients accept it.
-- Translation is per fallback link: a translated attempt that 500s
-  falls over to the next link, translated or direct, by the normal
-  chain rules. `--direct` disables it entirely.
+- **chat** (`/chat/completions`): system → system message, blocks →
+  OpenAI messages (`tool_use` → `tool_calls`, `tool_result` →
+  `tool` role), `max_tokens`/`temperature`/`top_p`/`stop` mapped,
+  `stream_options: {include_usage: true}` so token counts survive
+  streaming. Replies come back as Anthropic messages *and* Anthropic
+  SSE (`finish_reason: tool_calls` → `stop_reason: tool_use`).
+- **responses** (`/responses`): `system` → `instructions`, messages →
+  `input`, `max_tokens` → `max_output_tokens`, tools converted;
+  replies mapped back the same way, streaming included.
+- Translation is per fallback link and composes with chaining.
+  `--direct` disables it entirely.
 
 Verified against a scripted Responses-shaped dummy: text+tools
 round-trip (tool IDs preserved both ways), full streaming event
@@ -246,20 +249,20 @@ the effective options; `--no-config` ignores the file.
 ```ini
 [ornithopter]
 override = claude-sonnet-4-5
-upstream = muse-spark-1.3-contributor-free
-upstream_base = https://opencode.ai/zen/v1
-fallback = claude-sonnet-4-5
+upstream = poolside/laguna-s-2.1:free
+upstream_base = https://openrouter.ai/api/v1
+fallback = nvidia/nemotron-3-ultra-550b-a55b:free
 launch = True
 launch_target = claude
 host = 127.0.0.1
 port = 8646
-key = sk-zen-...
+key = sk-or-...
 ```
 
 The API key **is** saved (your explicit choice for double-click-to-fly
 convenience) — in plaintext, so treat the ini like a password file and
 don't commit it to a shared repo. Precedence every run:
-`--key` flag > `ZEN_API_KEY` env > ini.
+`--key` flag > `OPENROUTER_API_KEY` / `ZEN_API_KEY` env > ini.
 
 ## Auto-launch (`--launch`)
 
@@ -284,15 +287,15 @@ Run with `--verbose` and retry. The console then shows each request
 plus every upstream attempt (`upstream <id> -> HTTP <status>`), which
 tells you which side rejected it:
 
-- `upstream <id> -> HTTP 401` — the Zen key is missing/wrong. Check
-  `--key` / `ZEN_API_KEY` / ini.
+- `upstream <id> -> HTTP 401` — the upstream key is missing/wrong. Check
+  `--key` / env / ini.
 - `upstream <id> -> HTTP 429/5xx` with no fallback left — add
   `--fallback` entries.
 - `502 {"error": "all upstreams failed"}` — every link died without an
   HTTP response (network/timeout). The `detail` field has the last error.
-- HTTP `500` with Zen's `Internal server error` body — Zen rejected the
+- HTTP `500` with an `Internal server error` body — the upstream rejected the
   request shape itself (seen with missing auth and wrong endpoints);
-  the proxy passes it through untouched, so the body is Zen's, not ours.
+  the proxy passes it through untouched, so the body is the upstream's, not ours.
 - `500` on a *well-formed* request with a *working* key (bad keys give
   `401`, so a 500 means auth passed) points at a model/endpoint
   mismatch: e.g. Muse Spark is served via the Responses API, not
@@ -320,7 +323,11 @@ tells you which side rejected it:
 - `--launch` waits for `/health` 200 before opening the target (verified with a harmless binary; the UWP `shell:AppsFolder` path is Windows-only and code-reviewed, not live-tested here).
 - Free-tier guard verified live: paid `--upstream` refuses with `exit 2`; `--allow-paid` starts clean; `/v1/models` shows override + 7 free IDs, zero paid; direct paid model names are rewritten onto the free chain (no bypass, no rejection).
 - Dated/aliased model IDs (`claude-opus-4-1-20250805`, arbitrary strings) all rewrite to the chain primary; `stream:true` SSE responses terminate cleanly (~0.9s for a 3-chunk stream) via `Connection: close`.
-- `--probe` mechanics verified against a dummy: probes free IDs only, routes spark-family via translated `/responses`, reports per-model status.
+- Chat-dialect verified against a scripted OpenAI-chat dummy: object
+  round-trip with `tool_use` (`stop_reason: tool_use`, IDs preserved),
+  full streaming tool-call sequence terminating cleanly, `stream_options`
+  usage flowing into `message_delta`.
+- `--probe` mechanics verified against a dummy: probes free IDs only, tries chat-first ordering on OpenRouter-style bases, reports serving path.
 
 ## Limitations
 
@@ -331,9 +338,9 @@ tells you which side rejected it:
   Ornithopter needs a key with usable entitlement (paid Claude works;
   `--allow-paid`), or a different upstream entirely.
 
-- Inference requires a real Zen key; `/v1/models` is public and works without one.
+- Inference requires a real upstream key; `/v1/models` is public and works without one.
 - Ornithopter is inference pass-through only — no agent loop, no tools, no prompt caching. Like the card: it flies, it doesn't fight. Mostly.
-- Binds loopback only. If you expose it (`--host 0.0.0.0`), put it behind auth — anyone with network access can spend your Zen credits.
+- Binds loopback only. If you expose it (`--host 0.0.0.0`), put it behind auth — anyone with network access can spend your upstream credits.
 
 ## Requirements
 

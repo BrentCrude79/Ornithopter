@@ -32,7 +32,7 @@ import time
 import urllib.request
 import urllib.error
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
@@ -53,9 +53,11 @@ FREE_KEYED_TWINS = frozenset({"ox-alpha-free"})
 
 
 def is_free_id(mid):
-    """Definitively free-tier marker: -free suffix, minus keyed twins."""
+    """Definitively free-tier marker: -free (Zen) or :free (OpenRouter)
+    suffix, minus keyed twins."""
     m = (mid or "").lower()
-    return m.endswith("-free") and m not in FREE_KEYED_TWINS
+    return (m.endswith("-free") or m.endswith(":free")) \
+        and m not in FREE_KEYED_TWINS
 
 
 def fetch_live_ids(base, timeout=15):
@@ -109,27 +111,29 @@ def parse_args(argv=None):
                  "Options load from ornithopter.ini next to the script; "
                  "CLI flags win; --save writes them.",
     )
-    p.add_argument("--key", default=os.environ.get("ZEN_API_KEY", ""),
-                   help="Zen API key (or set ZEN_API_KEY env var). "
-                        "Local clients may use any placeholder bearer.")
+    p.add_argument("--key", default="",
+                   help="Upstream API key (or OPENROUTER_API_KEY / "
+                        "ZEN_API_KEY env). Local clients may use any "
+                        "placeholder bearer.")
     p.add_argument("--override", default="claude-sonnet-4-5",
                    help="Model name advertised locally and accepted from "
                         "clients. Must be an official Anthropic catalog name "
                         "so Claude Code accepts it. "
                         "(default: %(default)s)")
-    p.add_argument("--upstream", default="muse-spark-1.3-contributor-free",
-                   help="Real Zen model id to forward to. Free-tier only "
+    p.add_argument("--upstream", default="poolside/laguna-s-2.1:free",
+                   help="Real model id to forward to. Free-tier only "
                         "unless --allow-paid. "
                         "(default: %(default)s)")
-    p.add_argument("--upstream-base", default="https://opencode.ai/zen/v1",
-                   help="Upstream base URL. (default: %(default)s)")
+    p.add_argument("--upstream-base", default="https://openrouter.ai/api/v1",
+                   help="Upstream base URL (OpenRouter, Zen, or compatible). "
+                        "(default: %(default)s)")
     p.add_argument("--fallback", default="",
-                   help="Comma-separated fallback Zen model IDs, first-last "
-                        "priority (e.g. --fallback claude-sonnet-4-5,"
-                        "muse-spark-1.3-contributor-free). On rate-limit "
-                        "(429), 5xx, timeout, or connection error the "
-                        "request is retried with the next ID. Any Zen ID "
-                        "is allowed.")
+                   help="Comma-separated fallback model IDs, first-last "
+                        "priority (e.g. --fallback "
+                        "nvidia/nemotron-3-ultra-550b-a55b:free). On "
+                        "rate-limit (429), 5xx, timeout, or connection "
+                        "error the request is retried with the next ID. "
+                        "Free-tier only unless --allow-paid.")
     p.add_argument("--list-models", action="store_true",
                    help="Print the live upstream model catalog (one ID per "
                         "line) and exit.")
@@ -150,9 +154,14 @@ def parse_args(argv=None):
                    help="Disable the free-tier-only guard (students: leave "
                         "it off — paid model IDs can spend real credits).")
     p.add_argument("--direct", action="store_true",
-                   help="Disable Messages->Responses translation: always "
-                        "rename-and-forward untouched (for models that "
-                        "speak /messages natively, or debugging).")
+                   help="Disable translation: always rename-and-forward "
+                        "untouched (for models that speak /messages "
+                        "natively, or debugging).")
+    p.add_argument("--transport", default="auto",
+                   choices=["auto", "messages", "chat", "responses"],
+                   help="Force the upstream API shape instead of detecting "
+                        "it (useful for other OpenAI-compatible bases). "
+                        "(default: %(default)s)")
     p.add_argument("--probe", action="store_true",
                    help="Test every free-tier model with a minimal request "
                         "using your key and report what actually serves "
@@ -176,7 +185,7 @@ INI_SECTION = "ornithopter"
 # Option keys persisted to the ini, including the API key (plaintext —
 # the user's explicit choice for double-click-to-fly convenience).
 INI_KEYS = ("override", "upstream", "upstream_base", "fallback", "launch",
-            "launch_target", "host", "port", "key")
+            "launch_target", "host", "port", "key", "transport")
 
 
 def script_dir():
@@ -193,6 +202,10 @@ def probe_once(base, path, body, key, timeout=60):
         base + path, data=json.dumps(body).encode(), method="POST")
     req.add_header("User-Agent", "curl/8.0")
     req.add_header("Content-Type", "application/json")
+    if "openrouter" in (base or "").lower():
+        req.add_header("HTTP-Referer",
+                       "https://github.com/BrentCrude79/Ornithopter")
+        req.add_header("X-Title", "Ornithopter")
     if path == "/messages":
         req.add_header("anthropic-version", "2023-06-01")
     if key:
@@ -233,14 +246,17 @@ def probe_models(cfg):
                                             mid)
         chat = {"model": mid, "max_tokens": 1,
                 "messages": [{"role": "user", "content": "."}]}
-        if needs_responses_transport(mid):
-            attempts = [("/responses", translated),
-                        ("/messages", dict(mini_messages, model=mid)),
-                        ("/chat/completions", chat)]
-        else:
-            attempts = [("/messages", dict(mini_messages, model=mid)),
-                        ("/chat/completions", chat),
-                        ("/responses", translated)]
+        bodies = {"/responses": translated,
+                  "/messages": dict(mini_messages, model=mid),
+                  "/chat/completions": chat}
+        order = {"/responses": ["/responses", "/messages",
+                                "/chat/completions"],
+                 "chat": ["/chat/completions", "/messages", "/responses"],
+                 "messages": ["/messages", "/chat/completions",
+                              "/responses"]}[
+                                  transport_for(cfg["upstream_base"], mid,
+                                                cfg.get("transport"))]
+        attempts = [(p, bodies[p]) for p in order]
         served = None
         notes = []
         first_detail = ""
@@ -289,7 +305,7 @@ def overlay_ini(args, argv=None):
         return any(t == flag or t.startswith(flag + "=") for t in tokens)
 
     for key in ("override", "upstream", "upstream_base", "fallback",
-                "launch_target", "host"):
+                "launch_target", "host", "transport"):
         if not given(key) and ini.get(key):
             setattr(args, key, ini.get(key))
     # Key precedence: --key flag > ZEN_API_KEY env > ini.
@@ -317,6 +333,7 @@ def save_ini(args, cfg):
         "launch_target": args.launch_target,
         "host": args.host,
         "port": str(args.port),
+        "transport": args.transport,
         "key": args.key,
     }
     try:
@@ -609,6 +626,268 @@ class ResponsesStreamToAnthropic:
                 b"data: [DONE]\n\n"]
 
 
+def transport_for(base, mid, force="auto"):
+    """Which upstream API shape serves this model: responses (spark/gpt/
+    grok families), chat (OpenAI-compatible bases such as OpenRouter, or
+    forced), or messages (native Anthropic surface)."""
+    if force in ("responses", "chat", "messages"):
+        return force
+    if needs_responses_transport(mid):
+        return "responses"
+    if "openrouter" in (base or "").lower():
+        return "chat"
+    return "messages"
+
+
+def anthropic_to_chat(payload, model_id):
+    """Anthropic Messages request -> OpenAI chat/completions request."""
+    out = {"model": model_id}
+    msgs = []
+    system = payload.get("system")
+    if isinstance(system, str) and system:
+        msgs.append({"role": "system", "content": system})
+    elif isinstance(system, list):
+        text = "".join(_text_of(b) for b in system)
+        if text:
+            msgs.append({"role": "system", "content": text})
+    for msg in payload.get("messages", []) or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        blocks = content if isinstance(content, list) else [content]
+        if role == "assistant":
+            text_parts, calls = [], []
+            for b in blocks:
+                if isinstance(b, str):
+                    text_parts.append(b)
+                elif isinstance(b, dict):
+                    if b.get("type") == "text":
+                        text_parts.append(b.get("text", "") or "")
+                    elif b.get("type") == "tool_use":
+                        calls.append({
+                            "id": str(b.get("id", "")),
+                            "type": "function",
+                            "function": {
+                                "name": str(b.get("name", "")),
+                                "arguments": json.dumps(
+                                    b.get("input", {}))}})
+            m = {"role": "assistant"}
+            if text_parts:
+                m["content"] = "".join(text_parts)
+            elif not calls:
+                m["content"] = ""
+            else:
+                m["content"] = None
+            if calls:
+                m["tool_calls"] = calls
+            msgs.append(m)
+        else:
+            for b in blocks:
+                if isinstance(b, str):
+                    msgs.append({"role": "user", "content": b})
+                elif isinstance(b, dict):
+                    t = b.get("type")
+                    if t == "text":
+                        msgs.append({"role": "user",
+                                     "content": b.get("text", "") or ""})
+                    elif t == "image":
+                        src = b.get("source", {}) or {}
+                        if src.get("type") == "base64":
+                            url = "data:%s;base64,%s" % (
+                                src.get("media_type", "image/png"),
+                                src.get("data", ""))
+                        else:
+                            url = src.get("url", "") or ""
+                        msgs.append({"role": "user", "content": [{
+                            "type": "image_url", "image_url": {"url": url}}]})
+                    elif t == "tool_result":
+                        inner = b.get("content")
+                        inner = inner if isinstance(inner, list) else [inner]
+                        msgs.append({
+                            "role": "tool",
+                            "tool_call_id": str(b.get("tool_use_id", "")),
+                            "content": "".join(_text_of(c)
+                                               for c in inner)})
+    out["messages"] = msgs
+    if isinstance(payload.get("max_tokens"), int):
+        out["max_tokens"] = payload["max_tokens"]
+    for k in ("temperature", "top_p"):
+        if payload.get(k) is not None:
+            out[k] = payload[k]
+    if isinstance(payload.get("stop_sequences"), list):
+        out["stop"] = payload["stop_sequences"]
+    if payload.get("stream") is True:
+        out["stream"] = True
+        out["stream_options"] = {"include_usage": True}
+    tools = []
+    for t in payload.get("tools", []) or []:
+        if isinstance(t, dict) and t.get("name"):
+            tools.append({"type": "function", "function": {
+                "name": t["name"],
+                "description": t.get("description", "") or "",
+                "parameters": t.get("input_schema", {"type": "object"})}})
+    if tools:
+        out["tools"] = tools
+    tc = payload.get("tool_choice")
+    if isinstance(tc, dict):
+        if tc.get("type") == "auto":
+            out["tool_choice"] = "auto"
+        elif tc.get("type") == "any":
+            out["tool_choice"] = "required"
+        elif tc.get("type") == "tool":
+            out["tool_choice"] = {"type": "function",
+                                  "function": {"name": tc.get("name", "")}}
+    return out
+
+
+def chat_to_anthropic(resp, req_model):
+    """OpenAI chat/completions object -> Anthropic Messages object."""
+    rid = str(resp.get("id", ""))
+    choices = resp.get("choices", []) or [{}]
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    msg = choice.get("message", {}) or {}
+    finish = str(choice.get("finish_reason") or "stop")
+    content = []
+    text = msg.get("content")
+    if isinstance(text, str) and text:
+        content.append({"type": "text", "text": text})
+    for call in msg.get("tool_calls", []) or []:
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function", {}) or {}
+        try:
+            fargs = json.loads(fn.get("arguments") or "{}")
+        except Exception:
+            fargs = {}
+        content.append({"type": "tool_use",
+                        "id": str(call.get("id", "")),
+                        "name": str(fn.get("name", "")),
+                        "input": fargs})
+    stop = {"stop": "end_turn", "length": "max_tokens",
+            "tool_calls": "tool_use", "content_filter": "end_turn",
+            "function_call": "tool_use"}.get(finish, "end_turn")
+    usage = resp.get("usage", {}) or {}
+    return {"id": "msg_" + rid.replace("chatcmpl-", ""), "type": "message",
+            "role": "assistant", "model": req_model, "content": content,
+            "stop_reason": stop,
+            "usage": {"input_tokens": usage.get("prompt_tokens", 0) or 0,
+                      "output_tokens": usage.get("completion_tokens",
+                                                 0) or 0}}
+
+
+class ChatStreamToAnthropic:
+    """Feeds OpenAI chat SSE chunk dicts, yields Anthropic SSE bytes."""
+
+    def __init__(self, req_model):
+        self.req_model = req_model
+        self.msg_id = None
+        self.text_open = False
+        self.tool_index = {}  # openai tool index -> anthropic block index
+        self.tool_meta = {}   # anthropic block index -> {id, name, started}
+        self.next_tool_block = 1
+        self.usage = {"input_tokens": 0, "output_tokens": 0}
+        self.stop = "end_turn"
+        self.done = False
+
+    def _ev(self, obj):
+        return ("data: %s\n\n" % json.dumps(obj, separators=(",", ":"))).encode()
+
+    def feed(self, data):
+        out = []
+        if not isinstance(data, dict):
+            return out
+        if self.msg_id is None:
+            self.msg_id = "msg_" + str(data.get("id", "")).replace(
+                "chatcmpl-", "")
+            out.append(self._ev({
+                "type": "message_start",
+                "message": {"id": self.msg_id, "type": "message",
+                            "role": "assistant", "model": self.req_model,
+                            "content": [], "stop_reason": None,
+                            "usage": {"input_tokens": 0,
+                                      "output_tokens": 0}}}))
+        if isinstance(data.get("usage"), dict):
+            u = data["usage"]
+            self.usage = {"input_tokens": u.get("prompt_tokens", 0) or 0,
+                          "output_tokens": u.get("completion_tokens",
+                                                 0) or 0}
+        choices = data.get("choices", []) or []
+        choice = choices[0] if choices and isinstance(choices[0],
+                                                      dict) else {}
+        finish = choice.get("finish_reason")
+        if finish:
+            self.stop = {"stop": "end_turn", "length": "max_tokens",
+                         "tool_calls": "tool_use",
+                         "content_filter": "end_turn",
+                         "function_call": "tool_use"}.get(str(finish),
+                                                          "end_turn")
+        delta = choice.get("delta", {}) or {}
+        text = delta.get("content")
+        if isinstance(text, str) and text:
+            if not self.text_open:
+                self.text_open = True
+                out.append(self._ev({"type": "content_block_start",
+                                     "index": 0, "content_block": {
+                                         "type": "text", "text": ""}}))
+            out.append(self._ev({"type": "content_block_delta",
+                                 "index": 0, "delta": {
+                                     "type": "text_delta", "text": text}}))
+        for call in delta.get("tool_calls", []) or []:
+            if not isinstance(call, dict):
+                continue
+            oidx = call.get("index", 0)
+            if oidx not in self.tool_index:
+                self.tool_index[oidx] = self.next_tool_block
+                self.next_tool_block += 1
+            bidx = self.tool_index[oidx]
+            meta = self.tool_meta.setdefault(bidx, {"started": False})
+            fn = call.get("function", {}) or {}
+            if call.get("id"):
+                meta["id"] = str(call["id"])
+            if fn.get("name"):
+                meta["name"] = str(fn["name"])
+            if not meta["started"] and meta.get("name"):
+                meta["started"] = True
+                out.append(self._ev({"type": "content_block_start",
+                                     "index": bidx, "content_block": {
+                                         "type": "tool_use",
+                                         "id": meta.get("id",
+                                                        "call_%d" % bidx),
+                                         "name": meta["name"],
+                                         "input": {}}}))
+            frag = fn.get("arguments") or ""
+            if frag and meta.get("started"):
+                out.append(self._ev({"type": "content_block_delta",
+                                     "index": bidx, "delta": {
+                                         "type": "input_json_delta",
+                                         "partial_json": frag}}))
+        return out
+
+    def _close_all(self):
+        out = []
+        if self.text_open:
+            out.append(self._ev({"type": "content_block_stop", "index": 0}))
+            self.text_open = False
+        for bidx, meta in sorted(self.tool_meta.items()):
+            if meta.get("started"):
+                out.append(self._ev({"type": "content_block_stop",
+                                     "index": bidx}))
+                meta["started"] = False
+        return out
+
+    def finish(self):
+        if self.done:
+            return []
+        self.done = True
+        return self._close_all() + [self._ev({
+            "type": "message_delta",
+            "delta": {"stop_reason": self.stop, "stop_sequence": None},
+            "usage": self.usage}),
+            self._ev({"type": "message_stop"}),
+            b"data: [DONE]\n\n"]
+
+
 def make_handler(cfg):
     from http.server import BaseHTTPRequestHandler
 
@@ -671,6 +950,11 @@ def make_handler(cfg):
                 cfg["upstream_base"] + upstream_path, data=body, method="POST")
             req.add_header("User-Agent", "curl/8.0")
             req.add_header("Content-Type", "application/json")
+            if "openrouter" in (cfg.get("upstream_base") or "").lower():
+                req.add_header(
+                    "HTTP-Referer",
+                    "https://github.com/BrentCrude79/Ornithopter")
+                req.add_header("X-Title", "Ornithopter")
             if self.headers.get("Accept"):
                 req.add_header("Accept", self.headers.get("Accept"))
             # Anthropic-shaped auth upstream + vanilla bearer fallback.
@@ -726,14 +1010,14 @@ def make_handler(cfg):
             self.end_headers()
             self.wfile.write(data)
 
-        def _relay_translated(self, req, req_model, stream):
-            """Relay a Responses-API upstream, converting to Anthropic
-            Messages shape (object or SSE stream)."""
+        def _relay_converted(self, req, req_model, stream, obj_fn,
+                             translator_cls):
+            """Relay a converted upstream (responses/chat), returning
+            Anthropic Messages shape (object or SSE stream)."""
             upstream = urllib.request.urlopen(req, timeout=300)
             if not stream:
                 resp = json.loads(upstream.read().decode())
-                body = json.dumps(responses_to_anthropic(resp,
-                                                         req_model)).encode()
+                body = json.dumps(obj_fn(resp, req_model)).encode()
                 self.send_response(200)
                 self.send_header("Connection", "close")
                 self.send_header("Content-Type", "application/json")
@@ -749,7 +1033,7 @@ def make_handler(cfg):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
-            tr = ResponsesStreamToAnthropic(req_model)
+            tr = translator_cls(req_model)
             try:
                 buf = b""
                 while True:
@@ -777,6 +1061,16 @@ def make_handler(cfg):
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 pass
+
+        def _relay_translated(self, req, req_model, stream):
+            self._relay_converted(req, req_model, stream,
+                                  responses_to_anthropic,
+                                  ResponsesStreamToAnthropic)
+
+        def _relay_chat(self, req, req_model, stream):
+            self._relay_converted(req, req_model, stream,
+                                  chat_to_anthropic,
+                                  ChatStreamToAnthropic)
 
         def _forward(self, upstream_path):
             raw = self._read_body()
@@ -827,19 +1121,30 @@ def make_handler(cfg):
                         else cfg["override"])
             for i, attempt in enumerate(attempts):
                 use_path = upstream_path
-                translate = False
+                translate = None
                 try:
                     body = raw
                     if payload is not None and attempt is not None:
                         if (upstream_path.endswith("/messages")
-                                and not cfg.get("direct")
-                                and needs_responses_transport(attempt)):
-                            # Model lives on the Responses API: translate the
-                            # whole request instead of just renaming it.
-                            rbody = anthropic_to_responses(payload, attempt)
-                            body = json.dumps(rbody).encode()
-                            use_path = "/responses"
-                            translate = True
+                                and not cfg.get("direct")):
+                            mode = transport_for(cfg.get("upstream_base"),
+                                                 attempt,
+                                                 cfg.get("transport"))
+                            if mode != "messages":
+                                # Model lives on another API shape: translate
+                                # the whole request instead of renaming it.
+                                conv = (anthropic_to_responses
+                                        if mode == "responses" else
+                                        anthropic_to_chat)
+                                rbody = conv(payload, attempt)
+                                body = json.dumps(rbody).encode()
+                                use_path = ("/responses"
+                                            if mode == "responses" else
+                                            "/chat/completions")
+                                translate = mode
+                            else:
+                                payload["model"] = attempt
+                                body = json.dumps(payload).encode()
                         else:
                             # Rewrite the spoofed name to this attempt's Zen id.
                             payload["model"] = attempt
@@ -850,15 +1155,17 @@ def make_handler(cfg):
                     return
                 tag = attempt if attempt is not None else "passthrough"
                 if translate and cfg.get("verbose"):
-                    print("translated messages->responses for %s" % tag,
+                    print("translated messages->%s for %s" % (translate,
+                                                              tag),
                           flush=True, file=sys.stderr)
                 try:
                     req = self._make_request(use_path, body)
-                    if translate:
-                        self._relay_translated(
-                            req, req_name,
-                            bool(payload.get("stream"))
-                            if isinstance(payload, dict) else False)
+                    stream_out = (bool(payload.get("stream"))
+                                  if isinstance(payload, dict) else False)
+                    if translate == "responses":
+                        self._relay_translated(req, req_name, stream_out)
+                    elif translate == "chat":
+                        self._relay_chat(req, req_name, stream_out)
                     else:
                         self._relay(urllib.request.urlopen(req, timeout=300))
                     if cfg.get("verbose"):
@@ -907,6 +1214,8 @@ def main(argv=None):
               "accepts; it may reject it. Accepts: %s"
               % (args.override, ", ".join(CLAUDE_CODE_MODELS)),
               file=sys.stderr)
+    key = (args.key or os.environ.get("OPENROUTER_API_KEY", "") or
+           os.environ.get("ZEN_API_KEY", ""))
     cfg = {"override": args.override,
            "upstream": args.upstream or args.override,
            "upstream_base": args.upstream_base.rstrip("/"),
@@ -914,8 +1223,9 @@ def main(argv=None):
                          if f.strip()],
            "free_only": not args.allow_paid,
            "direct": args.direct,
+           "transport": args.transport,
            "verbose": args.verbose,
-           "key": args.key.strip()}
+           "key": key.strip()}
     if args.probe:
         return probe_models(cfg)
     if cfg["free_only"]:
@@ -926,7 +1236,7 @@ def main(argv=None):
         problems = []
         for m in [cfg["upstream"]] + cfg["fallbacks"]:
             if live is not None and m not in live:
-                problems.append("%s: not in the live Zen catalog" % m)
+                problems.append("%s: not in the live catalog" % m)
             elif not is_free_id(m):
                 problems.append("%s: not a free-tier model ID "
                                 "(students guard)" % m)
