@@ -325,6 +325,9 @@ tells you which side rejected it:
   full streaming tool-call sequence terminating cleanly, `stream_options`
   usage flowing into `message_delta`. Field-confirmed against live
   OpenRouter (`--upstream poolside/laguna-s-2.1:free`).
+- Replies are byte-faithful to the Anthropic shape (`stop_sequence`,
+  usage, `msg_` ids, model echo); CORS `*` + `OPTIONS` preflight served
+  for Electron/browser fetch contexts.
 - `--probe` mechanics verified against a dummy: probes free IDs only, tries chat-first ordering on OpenRouter-style bases, reports serving path.
 - 429 handling verified against a scripted throttler: two `Retry-After: 1` rejections then success (3 upstream hits, ~2s); `--retries 0` passes the 429 straight through with a single hit.
 

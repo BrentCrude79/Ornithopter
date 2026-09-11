@@ -32,7 +32,7 @@ import time
 import urllib.request
 import urllib.error
 
-__version__ = "1.7.0"
+__version__ = "1.7.1"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
@@ -541,7 +541,7 @@ def responses_to_anthropic(resp, req_model):
     usage = resp.get("usage") or {}
     return {"id": "msg_" + rid.replace("resp_", ""), "type": "message",
             "role": "assistant", "model": req_model, "content": content,
-            "stop_reason": stop,
+            "stop_reason": stop, "stop_sequence": None,
             "usage": {"input_tokens": usage.get("input_tokens", 0) or 0,
                       "output_tokens": usage.get("output_tokens", 0) or 0}}
 
@@ -571,6 +571,7 @@ class ResponsesStreamToAnthropic:
                 "message": {"id": self.msg_id, "type": "message",
                             "role": "assistant", "model": self.req_model,
                             "content": [], "stop_reason": None,
+                            "stop_sequence": None,
                             "usage": {"input_tokens": 0,
                                       "output_tokens": 0}}}))
         elif t == "response.output_item.added":
@@ -794,7 +795,7 @@ def chat_to_anthropic(resp, req_model):
     usage = resp.get("usage", {}) or {}
     return {"id": "msg_" + rid.replace("chatcmpl-", ""), "type": "message",
             "role": "assistant", "model": req_model, "content": content,
-            "stop_reason": stop,
+            "stop_reason": stop, "stop_sequence": None,
             "usage": {"input_tokens": usage.get("prompt_tokens", 0) or 0,
                       "output_tokens": usage.get("completion_tokens",
                                                  0) or 0}}
@@ -829,6 +830,7 @@ class ChatStreamToAnthropic:
                 "message": {"id": self.msg_id, "type": "message",
                             "role": "assistant", "model": self.req_model,
                             "content": [], "stop_reason": None,
+                            "stop_sequence": None,
                             "usage": {"input_tokens": 0,
                                       "output_tokens": 0}}}))
         if isinstance(data.get("usage"), dict):
@@ -921,6 +923,23 @@ def make_handler(cfg):
 
         def log_message(self, *a):
             pass
+
+        def end_headers(self):
+            # Browser/Electron fetch contexts need CORS headers to read
+            # responses at all; harmless everywhere else.
+            self.send_header("Access-Control-Allow-Origin", "*")
+            super().end_headers()
+
+        def do_OPTIONS(self):
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods",
+                             "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers",
+                             "Content-Type, Authorization, x-api-key, "
+                             "anthropic-version")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def _send_json(self, obj, status=200):
             data = json.dumps(obj).encode()
