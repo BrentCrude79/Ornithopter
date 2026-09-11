@@ -324,6 +324,13 @@ tells you which side rejected it:
 
 ## Limitations
 
+- Zen's free tier is session-locked: as of 2026-09-11, probing every
+  free-tier model on all three endpoint shapes with a personal key
+  serves nothing (`MissingSessionID` / `Model is disabled` /
+  opaque 500s). Free models only flow inside OpenCode sessions, so
+  Ornithopter needs a key with usable entitlement (paid Claude works;
+  `--allow-paid`), or a different upstream entirely.
+
 - Inference requires a real Zen key; `/v1/models` is public and works without one.
 - Ornithopter is inference pass-through only — no agent loop, no tools, no prompt caching. Like the card: it flies, it doesn't fight. Mostly.
 - Binds loopback only. If you expose it (`--host 0.0.0.0`), put it behind auth — anyone with network access can spend your Zen credits.
