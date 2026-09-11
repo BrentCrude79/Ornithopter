@@ -122,6 +122,10 @@ def parse_args(argv=None):
     p.add_argument("--allow-paid", action="store_true",
                    help="Disable the free-tier-only guard (students: leave "
                         "it off — paid model IDs can spend real credits).")
+    p.add_argument("--verbose", action="store_true",
+                   help="Log every request (method, path, model, upstream "
+                        "attempts and statuses) to stderr. Failures are "
+                        "always logged.")
     p.add_argument("--host", default="127.0.0.1",
                    help="Bind address. (default: %(default)s)")
     p.add_argument("--port", type=int, default=8646,
@@ -289,7 +293,7 @@ def make_handler(cfg):
         def _read_body(self):
             try:
                 length = int(self.headers.get("Content-Length", 0) or 0)
-            except ValueError:
+            except (ValueError, TypeError):
                 length = 0
             return self.rfile.read(length) if length else b""
 
@@ -336,7 +340,10 @@ def make_handler(cfg):
                 data = upstream.read()
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
-                self.wfile.write(data)
+                try:
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
 
         def _passthrough_error(self, e):
             data = e.read()
@@ -350,9 +357,16 @@ def make_handler(cfg):
             raw = self._read_body()
             try:
                 payload = json.loads(raw.decode() or "{}")
-                incoming = payload.get("model")
+                incoming = (payload.get("model") if isinstance(payload, dict)
+                            else None)
+                if not isinstance(payload, dict):
+                    payload = None
             except Exception:
                 payload, incoming = None, None  # non-JSON: forward untouched
+            if cfg.get("verbose"):
+                print("POST %s model=%r bytes=%d" % (
+                    upstream_path, incoming, len(raw)), flush=True,
+                    file=sys.stderr)
             # Free-only mode maps EVERY model name onto the free chain, so
             # no client can reach (or bill) a paid model whatever it asks
             # for — Claude sends dated/aliased IDs, not just --override.
@@ -363,16 +377,27 @@ def make_handler(cfg):
                         if spoofed else [None])
             last_error = "no attempts made"
             for i, attempt in enumerate(attempts):
-                body = raw
-                if payload is not None and attempt is not None:
-                    # Rewrite the spoofed name to this attempt's Zen id.
-                    payload["model"] = attempt
-                    body = json.dumps(payload).encode()
+                try:
+                    body = raw
+                    if payload is not None and attempt is not None:
+                        # Rewrite the spoofed name to this attempt's Zen id.
+                        payload["model"] = attempt
+                        body = json.dumps(payload).encode()
+                except Exception as e:
+                    self._send_json({"error": "bad_request",
+                                     "detail": str(e)}, 400)
+                    return
+                tag = attempt if attempt is not None else "passthrough"
                 try:
                     self._relay(urllib.request.urlopen(
                         self._make_request(upstream_path, body), timeout=300))
+                    if cfg.get("verbose"):
+                        print("upstream %s -> 200" % tag, flush=True,
+                              file=sys.stderr)
                     return
                 except urllib.error.HTTPError as e:
+                    print("upstream %s -> HTTP %s" % (tag, e.code),
+                          flush=True, file=sys.stderr)
                     if ((e.code == 429 or e.code >= 500)
                             and i < len(attempts) - 1):
                         try:
@@ -383,6 +408,8 @@ def make_handler(cfg):
                     self._passthrough_error(e)
                     return
                 except Exception as e:
+                    print("upstream %s -> error: %s" % (tag, e),
+                          flush=True, file=sys.stderr)
                     last_error = str(e)  # timeout/refused: try next
                     continue
             self._send_json({"error": "all upstreams failed",
@@ -416,6 +443,7 @@ def main(argv=None):
            "fallbacks": [f.strip() for f in args.fallback.split(",")
                          if f.strip()],
            "free_only": not args.allow_paid,
+           "verbose": args.verbose,
            "key": args.key.strip()}
     if cfg["free_only"]:
         live = fetch_live_ids(cfg["upstream_base"])

@@ -138,6 +138,7 @@ ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 | `--launch-target` | `claude` | What to launch: exe / Store alias / protocol, or a UWP AppID containing `!` (via `shell:AppsFolder`). Setting it implies `--launch`. |
 | `--save` | | Save effective options to `ornithopter.ini` next to the script, then keep running. |
 | `--no-config` | | Ignore `ornithopter.ini` even if present. |
+| `--verbose` | off | Log every request (method, path, model, upstream attempts) to stderr. Upstream failures always log. |
 | `--upstream-base` | `https://opencode.ai/zen/v1` | Upstream base URL (override for testing). |
 | `--host` | `127.0.0.1` | Bind address. Loopback by default; nothing is exposed to the LAN. |
 | `--port` | `8646` | Bind port. |
@@ -245,6 +246,24 @@ running until you Ctrl+C it.
 - Setting `--launch-target` implies `--launch`; both are ini-saveable,
   so `--save` gives you double-click-to-fly behavior paired with the
   `.bat` launcher.
+
+## Troubleshooting a rejected test request
+
+Run with `--verbose` and retry. The console then shows each request
+plus every upstream attempt (`upstream <id> -> HTTP <status>`), which
+tells you which side rejected it:
+
+- `upstream <id> -> HTTP 401` — the Zen key is missing/wrong. Check
+  `--key` / `ZEN_API_KEY` / ini.
+- `upstream <id> -> HTTP 429/5xx` with no fallback left — add
+  `--fallback` entries.
+- `502 {"error": "all upstreams failed"}` — every link died without an
+  HTTP response (network/timeout). The `detail` field has the last error.
+- HTTP `500` with Zen's `Internal server error` body — Zen rejected the
+  request shape itself (seen with missing auth and wrong endpoints);
+  the proxy passes it through untouched, so the body is Zen's, not ours.
+- Proxy-side crashes now return `400/502` JSON instead of bare 500s;
+  malformed bodies, broken pipes, and headerless posts are all handled.
 
 ## Verified behavior
 
