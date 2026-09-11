@@ -49,6 +49,12 @@ def parse_args(argv=None):
         prog="ornithopter",
         description="Local Anthropic-compatible proxy for OpenCode Zen "
                     "with spoofable model names for Claude Code.",
+        epilog="override choices (names Claude Code accepts): "
+               + ", ".join(CLAUDE_CODE_MODELS)
+               + ". --upstream takes any Zen model ID "
+                 "(e.g. claude-sonnet-4-5, muse-spark-1.3-contributor-free); "
+                 "see https://opencode.ai/zen/v1/models or GET /v1/models "
+                 "while running.",
     )
     p.add_argument("--key", default=os.environ.get("ZEN_API_KEY", ""),
                    help="Zen API key (or set ZEN_API_KEY env var). "
