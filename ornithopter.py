@@ -38,23 +38,10 @@ CLAUDE_CODE_MODELS = [
     "claude-3-5-haiku-20241022",
     "claude-3-opus-20240229",
 ]
-# Claude-family model IDs actually served by Zen (audited 2026-09-11
-# against https://opencode.ai/zen/v1/models, 70-model catalog).
-# Validates --upstream, which must exist or inference fails.
-ZEN_CLAUDE_IDS = [
-    "claude-fable-5",
-    "claude-fable-5-1",
-    "claude-haiku-4-5",
-    "claude-opus-4-5",
-    "claude-opus-4-6",
-    "claude-opus-4-7",
-    "claude-opus-4-8",
-    "claude-opus-5",
-    "claude-sonnet-4",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-6",
-    "claude-sonnet-5",
-]
+# NOTE: --upstream is deliberately NOT validated. Any Zen model ID works
+# here — including muse-spark and other non-Claude models — the proxy
+# just rewrites the name and forwards. If the ID doesn't exist upstream
+# Zen itself returns the error.
 
 
 def parse_args(argv=None):
@@ -214,12 +201,6 @@ def main(argv=None):
         print("warning: --override '%s' is not a model name Claude Code "
               "accepts; it may reject it. Accepts: %s"
               % (args.override, ", ".join(CLAUDE_CODE_MODELS)),
-              file=sys.stderr)
-    upstream = args.upstream or args.override
-    if upstream not in ZEN_CLAUDE_IDS and not upstream.endswith("-free"):
-        print("warning: --upstream '%s' is not a Claude model served by "
-              "Zen; inference will fail. Served: %s"
-              % (upstream, ", ".join(ZEN_CLAUDE_IDS)),
               file=sys.stderr)
     cfg = {"override": args.override,
            "upstream": args.upstream or args.override,
