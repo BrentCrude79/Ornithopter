@@ -22,6 +22,10 @@ Claude Code  --->  http://127.0.0.1:8646  --->  https://openrouter.ai/api/v1
 - **No key sprawl.** Your upstream key lives in one place (the proxy). Local apps use a dummy token.
 - **Zero dependencies.** Python 3 stdlib only. Runs on Windows, macOS, Linux. No `pip install`, no venv, no Docker.
 
+### Claude Code Desktop GUI proxying its requests to OpenRouter in real time via its own terminal
+
+![Claude Code Desktop GUI proxying its requests to OpenRouter in real time via its own terminal](working.png)
+
 ## Quick start
 
 ```bash
