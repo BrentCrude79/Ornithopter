@@ -153,6 +153,11 @@ def parse_args(argv=None):
                    help="Disable Messages->Responses translation: always "
                         "rename-and-forward untouched (for models that "
                         "speak /messages natively, or debugging).")
+    p.add_argument("--probe", action="store_true",
+                   help="Test every free-tier model with a minimal request "
+                        "using your key and report what actually serves "
+                        "(status per model). Probes free IDs only — never "
+                        "spends. Then exit.")
     p.add_argument("--verbose", action="store_true",
                    help="Log every request (method, path, model, upstream "
                         "attempts and statuses) to stderr. Failures are "
@@ -180,6 +185,59 @@ def script_dir():
 
 def ini_path():
     return os.path.join(script_dir(), INI_NAME)
+
+
+def probe_models(cfg):
+    """Send one minimal request per free-tier model with the configured
+    key and report what serves. Free IDs only — never spends."""
+    live = fetch_live_ids(cfg["upstream_base"])
+    if live is None:
+        print("error: could not fetch the live catalog", file=sys.stderr)
+        return 1
+    free = sorted(m for m in live if is_free_id(m))
+    if not free:
+        print("no free-tier models in the live catalog")
+        return 1
+    print("%d free-tier models; probing with minimal requests..." % len(free))
+    auth_failures = 0
+    for mid in free:
+        if needs_responses_transport(mid):
+            body = anthropic_to_responses(
+                {"model": mid, "max_tokens": 1,
+                 "messages": [{"role": "user", "content": "."}]}, mid)
+            path = "/responses"
+        else:
+            body = {"model": mid, "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "."}]}
+            path = "/messages"
+        req = urllib.request.Request(
+            cfg["upstream_base"] + path,
+            data=json.dumps(body).encode(), method="POST")
+        req.add_header("User-Agent", "curl/8.0")
+        req.add_header("Content-Type", "application/json")
+        if path == "/messages":
+            req.add_header("anthropic-version", "2023-06-01")
+        if cfg["key"]:
+            req.add_header("x-api-key", cfg["key"])
+            req.add_header("Authorization", "Bearer " + cfg["key"])
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                print("%-42s HTTP %s (serves)" % (mid, r.status), flush=True)
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read()[:160].decode("utf-8", errors="replace")
+            except Exception:
+                detail = ""
+            print("%-42s HTTP %s %s" % (mid, e.code, detail), flush=True)
+            if e.code == 401:
+                auth_failures += 1
+                if auth_failures >= 2:
+                    print("key rejected twice; stopping.", file=sys.stderr)
+                    return 1
+        except Exception as e:
+            print("%-42s ERROR %s" % (mid, e), flush=True)
+        time.sleep(0.5)
+    return 0
 
 
 def overlay_ini(args, argv=None):
@@ -827,6 +885,8 @@ def main(argv=None):
            "direct": args.direct,
            "verbose": args.verbose,
            "key": args.key.strip()}
+    if args.probe:
+        return probe_models(cfg)
     if cfg["free_only"]:
         live = fetch_live_ids(cfg["upstream_base"])
         if live is None:

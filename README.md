@@ -111,6 +111,9 @@ python ornithopter.py --key sk-zen-... \
   --override claude-sonnet-4-5 --upstream muse-spark-1.3-contributor-free \
   --fallback claude-sonnet-4-5
 
+# Map what your key can actually run (free IDs only, minimal probes)
+python ornithopter.py --key sk-zen-... --probe
+
 # See what's actually on Zen right now (catalog rotates)
 python ornithopter.py --list-models
 
@@ -133,6 +136,7 @@ ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 | `--upstream` | `muse-spark-1.3-contributor-free` | Real Zen model id to forward to. Free-tier only unless `--allow-paid`. |
 | `--allow-paid` | off | Disable the free-tier-only guard. Students: leave it off — paid IDs can spend real credits. |
 | `--direct` | off | Disable Messages→Responses translation (rename-and-forward only). For models speaking `/messages` natively, or debugging. |
+| `--probe` | | Test every free-tier model with a minimal request using your key; report per-model status. Free IDs only — never spends. Then exit. |
 | `--fallback` | _(none)_ | Comma-separated fallback Zen model IDs, first-last priority. On 429, 5xx, timeout, or connection error the request is retried with the next ID. |
 | `--list-models` | | Print the live upstream catalog (one ID per line) and exit. |
 | `--launch` | off | Launch the Claude app once the proxy is healthy. Target from `--launch-target` (or ini). |
@@ -316,6 +320,7 @@ tells you which side rejected it:
 - `--launch` waits for `/health` 200 before opening the target (verified with a harmless binary; the UWP `shell:AppsFolder` path is Windows-only and code-reviewed, not live-tested here).
 - Free-tier guard verified live: paid `--upstream` refuses with `exit 2`; `--allow-paid` starts clean; `/v1/models` shows override + 7 free IDs, zero paid; direct paid model names are rewritten onto the free chain (no bypass, no rejection).
 - Dated/aliased model IDs (`claude-opus-4-1-20250805`, arbitrary strings) all rewrite to the chain primary; `stream:true` SSE responses terminate cleanly (~0.9s for a 3-chunk stream) via `Connection: close`.
+- `--probe` mechanics verified against a dummy: probes free IDs only, routes spark-family via translated `/responses`, reports per-model status.
 
 ## Limitations
 
