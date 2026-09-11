@@ -185,6 +185,7 @@ the effective options; `--no-config` ignores the file.
 [ornithopter]
 override = claude-sonnet-4-5
 upstream = muse-spark-1.3-contributor-free
+upstream_base = https://opencode.ai/zen/v1
 fallback = claude-sonnet-4-5
 launch = True
 launch_target = claude

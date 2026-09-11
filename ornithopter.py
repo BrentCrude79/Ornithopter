@@ -111,8 +111,8 @@ def parse_args(argv=None):
 INI_NAME = "ornithopter.ini"
 INI_SECTION = "ornithopter"
 # Option keys persisted to the ini (never the API key).
-INI_KEYS = ("override", "upstream", "fallback", "launch", "launch_target",
-            "host", "port")
+INI_KEYS = ("override", "upstream", "upstream_base", "fallback", "launch",
+            "launch_target", "host", "port")
 
 
 def script_dir():
@@ -140,7 +140,8 @@ def overlay_ini(args, argv=None):
         flag = "--" + key.replace("_", "-")
         return any(t == flag or t.startswith(flag + "=") for t in tokens)
 
-    for key in ("override", "upstream", "fallback", "launch_target", "host"):
+    for key in ("override", "upstream", "upstream_base", "fallback",
+                "launch_target", "host"):
         if not given(key) and ini.get(key):
             setattr(args, key, ini.get(key))
     if not given("port") and ini.get("port"):
@@ -159,6 +160,7 @@ def save_ini(args, cfg):
     cp[INI_SECTION] = {
         "override": cfg["override"],
         "upstream": args.upstream,
+        "upstream_base": args.upstream_base,
         "fallback": args.fallback,
         "launch": str(bool(args.launch or args.launch_target)),
         "launch_target": args.launch_target,
