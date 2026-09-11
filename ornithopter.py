@@ -45,10 +45,27 @@ CLAUDE_CODE_MODELS = [
     "claude-3-5-haiku-20241022",
     "claude-3-opus-20240229",
 ]
-# NOTE: --upstream is deliberately NOT validated. Any Zen model ID works
-# here — including muse-spark and other non-Claude models — the proxy
-# just rewrites the name and forwards. If the ID doesn't exist upstream
-# Zen itself returns the error.
+# Models that look free (-free suffix) but are keyed server-side and can
+# never ride the free tier (mirrors Hermes's own exclusion list).
+FREE_KEYED_TWINS = frozenset({"ox-alpha-free"})
+
+
+def is_free_id(mid):
+    """Definitively free-tier marker: -free suffix, minus keyed twins."""
+    m = (mid or "").lower()
+    return m.endswith("-free") and m not in FREE_KEYED_TWINS
+
+
+def fetch_live_ids(base, timeout=15):
+    """Live Zen catalog IDs, or None when unreachable."""
+    try:
+        req = urllib.request.Request(
+            base.rstrip("/") + "/models",
+            headers={"User-Agent": "curl/8.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return {m["id"] for m in json.loads(r.read())["data"]}
+    except Exception:
+        return None
 
 
 def parse_args(argv=None):
@@ -73,9 +90,10 @@ def parse_args(argv=None):
                         "clients. Must be an official Anthropic catalog name "
                         "so Claude Code accepts it. "
                         "(default: %(default)s)")
-    p.add_argument("--upstream", default="",
-                   help="Real Zen model id to forward to. "
-                        "Default: same as --override.")
+    p.add_argument("--upstream", default="muse-spark-1.3-contributor-free",
+                   help="Real Zen model id to forward to. Free-tier only "
+                        "unless --allow-paid. "
+                        "(default: %(default)s)")
     p.add_argument("--upstream-base", default="https://opencode.ai/zen/v1",
                    help="Upstream base URL. (default: %(default)s)")
     p.add_argument("--fallback", default="",
@@ -101,6 +119,9 @@ def parse_args(argv=None):
                         "next to the script, then keep running.")
     p.add_argument("--no-config", action="store_true",
                    help="Ignore ornithopter.ini even if present.")
+    p.add_argument("--allow-paid", action="store_true",
+                   help="Disable the free-tier-only guard (students: leave "
+                        "it off — paid model IDs can spend real credits).")
     p.add_argument("--host", default="127.0.0.1",
                    help="Bind address. (default: %(default)s)")
     p.add_argument("--port", type=int, default=8646,
@@ -236,6 +257,8 @@ def make_handler(cfg):
         def _models_payload(self):
             # Advertise the override name; merge the live upstream catalog
             # (public endpoint) so OpenAI-style clients see everything too.
+            # Free-only mode filters the merged list to free-tier IDs so
+            # clients never discover (or bill) a paid model.
             models = [{"id": cfg["override"], "object": "model",
                        "created": 0, "owned_by": "anthropic"}]
             try:
@@ -244,8 +267,11 @@ def make_handler(cfg):
                     headers={"User-Agent": "curl/8.0"})
                 with urllib.request.urlopen(req, timeout=15) as r:
                     for m in json.loads(r.read())["data"]:
-                        if m["id"] != cfg["override"]:
-                            models.append(m)
+                        if m["id"] == cfg["override"]:
+                            continue
+                        if cfg["free_only"] and not is_free_id(m["id"]):
+                            continue
+                        models.append(m)
             except Exception:
                 pass
             return {"object": "list", "data": models}
@@ -324,8 +350,18 @@ def make_handler(cfg):
             except Exception:
                 payload, spoofed = None, False  # non-JSON: forward untouched
             # Spoofed requests walk primary + fallbacks in order; anything
-            # else goes through once, untouched. Failover only happens
-            # before a response starts — once upstream returns 200 we commit.
+            # else goes through once, untouched — except the free-tier
+            # guard, which also screens direct (non-spoofed) model IDs so
+            # a client can't bypass it by naming a paid model outright.
+            if not spoofed and payload is not None:
+                direct = payload.get("model")
+                if (cfg["free_only"] and direct
+                        and not is_free_id(direct)):
+                    self._send_json(
+                        {"error": "model_not_allowed",
+                         "detail": "%s is not a free-tier model ID "
+                                   "(students guard)" % direct}, 403)
+                    return
             attempts = ([cfg["upstream"]] + cfg["fallbacks"]
                         if spoofed else [None])
             last_error = "no attempts made"
@@ -382,7 +418,26 @@ def main(argv=None):
            "upstream_base": args.upstream_base.rstrip("/"),
            "fallbacks": [f.strip() for f in args.fallback.split(",")
                          if f.strip()],
+           "free_only": not args.allow_paid,
            "key": args.key.strip()}
+    if cfg["free_only"]:
+        live = fetch_live_ids(cfg["upstream_base"])
+        if live is None:
+            print("warning: could not verify the live catalog; checking "
+                  "-free suffix only.", file=sys.stderr)
+        problems = []
+        for m in [cfg["upstream"]] + cfg["fallbacks"]:
+            if live is not None and m not in live:
+                problems.append("%s: not in the live Zen catalog" % m)
+            elif not is_free_id(m):
+                problems.append("%s: not a free-tier model ID "
+                                "(students guard)" % m)
+        if problems:
+            print("free-tier guard: refusing to start "
+                  "(use --allow-paid to override):", file=sys.stderr)
+            for p in problems:
+                print("  - " + p, file=sys.stderr)
+            return 2
     if args.list_models:
         req = urllib.request.Request(
             cfg["upstream_base"] + "/models",
@@ -429,4 +484,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

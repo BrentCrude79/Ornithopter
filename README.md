@@ -96,9 +96,9 @@ If Claude Code rejects the model, the name it sends doesn't equal `--override` �
 ## Examples
 
 ```bash
-# Advertise Opus locally, actually run Sonnet on Zen
+# Advertise Opus locally, actually run a free Muse Spark on Zen
 python ornithopter.py --key sk-zen-... \
-  --override claude-opus-4-5 --upstream claude-sonnet-4-5
+  --override claude-opus-4-5 --upstream muse-spark-1.3-contributor-free
 
 # Run a free Zen model behind a Sonnet name
 python ornithopter.py --key sk-zen-... \
@@ -128,7 +128,8 @@ ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 |---|---|---|
 | `--key` | `$ZEN_API_KEY` | Zen API key, attached upstream as `x-api-key` + bearer. Local clients may send any placeholder. |
 | `--override` | `claude-sonnet-4-5` | Model name advertised in `/v1/models` and accepted from clients. Warns if not in the known Anthropic catalog. |
-| `--upstream` | same as `--override` | Real Zen model ID forwarded to (`claude-sonnet-4-5`, `muse-spark-1.3-contributor-free`, …). Any Zen ID allowed — never validated. |
+| `--upstream` | `muse-spark-1.3-contributor-free` | Real Zen model id to forward to. Free-tier only unless `--allow-paid`. |
+| `--allow-paid` | off | Disable the free-tier guard. Students: leave it off — paid IDs can spend real credits. |
 | `--fallback` | _(none)_ | Comma-separated fallback Zen model IDs, first-last priority. On 429, 5xx, timeout, or connection error the request is retried with the next ID. |
 | `--list-models` | | Print the live upstream catalog (one ID per line) and exit. |
 | `--launch` | off | Launch the Claude app once the proxy is healthy. Target from `--launch-target` (or ini). |
@@ -173,6 +174,31 @@ error passes through with its original status and body; you only get
 `502 {"error": "all upstreams failed"}` when every link died without
 an HTTP response at all (timeouts, refused connections). `/health`
 reports the active chain.
+
+## Student safety: free-tier-only by default
+
+Ornithopter is built for classrooms: by default it can **never** route
+to a paid model, so it can never run up costs.
+
+- `--upstream` / `--fallback` must be free-tier IDs: verified against
+  the **live** Zen catalog at startup (must be listed *and* `-free`
+  suffixed, minus server-side keyed twins like `ox-alpha-free` —
+  Hermes's own exclusion, mirrored here). Violations refuse to start
+  (`exit 2`). Offline, it falls back to suffix checking with a warning.
+- The guard also screens **direct** model names: a client naming a paid
+  model outright gets `403 model_not_allowed`, so the guard can't be
+  bypassed from Claude Code's config.
+- `/v1/models` only advertises the override alias plus free-tier IDs —
+  paid models aren't even discoverable through the proxy.
+- `--allow-paid` disables all of this. Don't set it on student machines.
+
+Why not just copy Hermes's keyless trick? Hermes rides Zen's free tier
+with empty-bearer + attribution headers *as a registered aggregator* —
+and even that only works with OpenCode session context: direct
+anonymous calls fail (`OpenCode's free tier can only be used in
+OpenCode`). A standalone localhost proxy can't mint that context, so a
+personal Zen key (free tier) remains required — the guard makes sure
+that key can only ever touch free models.
 
 ## Config file (`ornithopter.ini`)
 
@@ -227,6 +253,7 @@ running until you Ctrl+C it.
   link's error with its original status.
 - `--save` writes `ornithopter.ini`; a bare rerun loads override/upstream/fallback/port from it; CLI flags beat ini; `--no-config` ignores it.
 - `--launch` waits for `/health` 200 before opening the target (verified with a harmless binary; the UWP `shell:AppsFolder` path is Windows-only and code-reviewed, not live-tested here).
+- Free-tier guard verified live: paid `--upstream` refuses with `exit 2`; `--allow-paid` starts clean; `/v1/models` shows override + 7 free IDs, zero paid; direct paid model → `403 model_not_allowed`; direct free ID forwards (upstream 401 on dummy key, not guard-blocked).
 
 ## Limitations
 
