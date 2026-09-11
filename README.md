@@ -331,7 +331,8 @@ tells you which side rejected it:
   round-trip with `tool_use` (`stop_reason: tool_use`, IDs preserved),
   full streaming tool-call sequence terminating cleanly, `stream_options`
   usage flowing into `message_delta`. Field-confirmed against live
-  OpenRouter (`--upstream poolside/laguna-s-2.1:free`).
+  OpenRouter (`--upstream poolside/laguna-s-2.1:free`), including the
+  Desktop app's own gateway test passing (1-token completion).
 - Replies are byte-faithful to the Anthropic shape (`stop_sequence`,
   full `usage` including cache keys, `msg_` ids, model echo); streams use
   typed `event:` lines and end at `message_stop` with no OpenAI-style
