@@ -35,9 +35,18 @@ curl http://127.0.0.1:8646/v1/models
 
 ## Claude Code setup
 
-There is no "developer mode" switch in Claude Code — pointing it at a custom `ANTHROPIC_BASE_URL` **is** the local-inference override mechanism. (If you meant a different app's GUI toggle, tell me which app and I'll add the exact clicks — I'm not going to guess menu paths.)
+Two surfaces, same proxy — pick yours:
 
-The model name Claude Code sends must match `--override` (default: `claude-sonnet-4-5`).
+**Claude Desktop app (GUI):**
+
+1. Open the main menu (hamburger, ☰) → **Help → Troubleshooting → Enable Developer Mode**.
+2. This uncovers developer settings under **File → Developer**.
+3. In the developer settings, configure local inference: base URL `http://127.0.0.1:8646` with any placeholder token.
+4. Ornithopter defaults to advertising **Sonnet 4.5** (`claude-sonnet-4-5`) — so select that model in the app, or restart the proxy with `--override <name>` to advertise a different official Anthropic name and select that instead.
+
+**Claude Code CLI (terminal):** pointing it at a custom `ANTHROPIC_BASE_URL` is the local-inference override mechanism.
+
+The model name Claude Code sends must match `--override` (default: `claude-sonnet-4-5` — change it with the `--override` flag, e.g. `--override claude-opus-4-5`).
 
 **Option A — current terminal only:**
 
