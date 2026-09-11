@@ -156,6 +156,7 @@ OPENROUTER_API_KEY=sk-or-... python ornithopter.py --port 9000
 | `--upstream-base` | `https://openrouter.ai/api/v1` | Upstream base URL (OpenRouter or compatible). |
 | `--transport` | `auto` | Force the upstream API shape (`messages`, `chat`, `responses`) instead of detecting it. |
 | `--retries` | `1` | Retries of the same model on HTTP 429 when a `Retry-After` hint is present (waits up to 60s). Hintless 429s fail over immediately. `0` disables. |
+| `--cooldown` | `60` | Seconds a failed link (429/5xx/timeout) is skipped for new requests. Sticky failover with automatic return on expiry. `0` disables. |
 | `--host` | `127.0.0.1` | Bind address. Loopback by default; nothing is exposed to the LAN. |
 | `--port` | `8646` | Bind port. |
 | `-h, --help` | | Full help. |
@@ -193,6 +194,15 @@ error passes through with its original status and body; you only get
 `502 {"error": "all upstreams failed"}` when every link died without
 an HTTP response at all (timeouts, refused connections). `/health`
 reports the active chain.
+
+## Sticky failover (`--cooldown`)
+
+Without memory, every request re-touches a throttled primary before
+failing over — wasteful and slow. Ornithopter remembers link health:
+a link that 429s/5xxs/times out cools down (default 60s, or the
+`Retry-After` hint when present), new requests skip cooled links, and
+expired links rejoin silently. Success clears a link's cooldown, so
+recovery is automatic in both directions. `--cooldown 0` disables.
 
 ## Student safety: free-tier-only by default
 
@@ -350,6 +360,9 @@ tells you which side rejected it:
   to success (3 hits, ~2s); hintless 429 fails straight over to the
   fallback (2 hits, ~30ms, 200); `--retries 0` passes 429s through
   with a single hit.
+- Sticky failover verified: throttled primary touched once, then skipped
+  (`skipping cooled-down`, straight to fallback); retried automatically
+  after `--cooldown` expiry; success clears cooldowns.
 - Relay hardening: gzipped 200s decode transparently; empty/non-JSON
   200s become a logged `502 bad_upstream_body` instead of a traceback;
   all writes tolerate disconnects; `Content-Encoding` is never

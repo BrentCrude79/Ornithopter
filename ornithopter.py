@@ -33,7 +33,7 @@ import time
 import urllib.request
 import urllib.error
 
-__version__ = "1.7.8"
+__version__ = "1.7.9"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
@@ -211,6 +211,12 @@ def parse_args(argv=None):
                         "60s), before failing over to the next fallback. "
                         "Hintless 429s fail over immediately. 0 disables "
                         "retries. (default: %(default)s)")
+    p.add_argument("--cooldown", type=int, default=60,
+                   help="Seconds a failed link (429/5xx/timeout) is skipped "
+                        "for new requests. Requests start at the primary "
+                        "unless it is cooling down, and drift back "
+                        "automatically on expiry. 0 disables. "
+                        "(default: %(default)s)")
     p.add_argument("--probe", action="store_true",
                    help="Test every free-tier model with a minimal request "
                         "using your key and report what actually serves "
@@ -234,7 +240,8 @@ INI_SECTION = "ornithopter"
 # Option keys persisted to the ini, including the API key (plaintext —
 # the user's explicit choice for double-click-to-fly convenience).
 INI_KEYS = ("override", "upstream", "upstream_base", "fallback", "launch",
-            "launch_target", "host", "port", "key", "transport", "retries")
+            "launch_target", "host", "port", "key", "transport", "retries",
+            "cooldown")
 
 
 def script_dir():
@@ -362,6 +369,11 @@ def overlay_ini(args, argv=None):
             args.retries = max(0, int(ini.get("retries") or 0))
         except ValueError:
             pass
+    if not given("cooldown") and ini.get("cooldown"):
+        try:
+            args.cooldown = max(0, int(ini.get("cooldown") or 0))
+        except ValueError:
+            pass
     # Key precedence: --key flag > OPENROUTER_API_KEY > ZEN_API_KEY > ini.
     # (Env beats ini: only fill from ini when no env key exists.)
     if (not args.key and not given("key") and ini.get("key")
@@ -392,6 +404,7 @@ def save_ini(args, cfg):
         "port": str(args.port),
         "transport": args.transport,
         "retries": str(args.retries),
+        "cooldown": str(args.cooldown),
         "key": args.key,
     }
     try:
@@ -959,6 +972,23 @@ class _ClientGone(Exception):
 def make_handler(cfg):
     from http.server import BaseHTTPRequestHandler
 
+    # Link health memory, shared across handler instances (threads):
+    # model id -> timestamp when it may be tried again.
+    cooldowns = {}
+    cooldown_lock = threading.Lock()
+
+    def _cooled(name):
+        with cooldown_lock:
+            return max(0.0, cooldowns.get(name, 0.0) - time.time())
+
+    def _cool(name, seconds):
+        with cooldown_lock:
+            cooldowns[name] = time.time() + max(0, seconds)
+
+    def _uncool(name):
+        with cooldown_lock:
+            cooldowns.pop(name, None)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "ornithopter/1.0"
         protocol_version = "HTTP/1.1"
@@ -1262,8 +1292,24 @@ def make_handler(cfg):
             # With --allow-paid only the override alias is rewritten and
             # anything else passes through untouched.
             spoofed = True if cfg["free_only"] else incoming == cfg["override"]
-            attempts = ([cfg["upstream"]] + cfg["fallbacks"]
-                        if spoofed else [None])
+            chain = ([cfg["upstream"]] + cfg["fallbacks"]
+                     if spoofed else [None])
+            # Sticky health: skip links still cooling down, so a throttled
+            # primary isn't re-touched on every request. If everything is
+            # cooling, try in order anyway. Expired links rejoin silently.
+            if spoofed and (cfg.get("cooldown", 0) or 0) > 0:
+                live = [m for m in chain if _cooled(m) <= 0]
+                if live:
+                    skipped = [m for m in chain if _cooled(m) > 0]
+                    if skipped and cfg.get("verbose"):
+                        print("skipping cooled-down: %s" % ", ".join(
+                            "%s (%ds left)" % (m, int(_cooled(m)))
+                            for m in skipped), flush=True, file=sys.stderr)
+                    attempts = live
+                else:
+                    attempts = chain
+            else:
+                attempts = chain
             last_error = "no attempts made"
             req_name = (incoming if isinstance(incoming, str)
                         else cfg["override"])
@@ -1323,10 +1369,17 @@ def make_handler(cfg):
                         if cfg.get("verbose"):
                             print("upstream %s -> 200" % tag, flush=True,
                                   file=sys.stderr)
+                        if attempt is not None:
+                            _uncool(attempt)
                         return
                     except urllib.error.HTTPError as e:
                         print("upstream %s -> HTTP %s" % (tag, e.code),
                               flush=True, file=sys.stderr)
+                        if attempt is not None and (e.code == 429
+                                                    or e.code >= 500):
+                            hint = retry_after_seconds(e)
+                            _cool(attempt, hint if hint is not None
+                                  else (cfg.get("cooldown", 0) or 0))
                         if e.code == 429 and attempt_no < max_retries:
                             wait = retry_after_seconds(e)
                             if wait is not None:
@@ -1352,6 +1405,8 @@ def make_handler(cfg):
                     except Exception as e:
                         print("upstream %s -> error: %s" % (tag, e),
                               flush=True, file=sys.stderr)
+                        if attempt is not None:
+                            _cool(attempt, cfg.get("cooldown", 0) or 0)
                         last_error = str(e)  # timeout/refused: try next
                         break
             self._send_json({"error": "all upstreams failed",
@@ -1397,6 +1452,7 @@ def main(argv=None):
            "free_only": not args.allow_paid,
            "direct": args.direct,
            "transport": args.transport,
+           "cooldown": args.cooldown,
            "retries": args.retries,
            "verbose": args.verbose,
            "key": key.strip()}
