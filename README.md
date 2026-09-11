@@ -354,6 +354,9 @@ tells you which side rejected it:
   idle keep-alive socket can never wedge later requests into timeouts.
 - Tolerant routing: trailing slashes and query strings (`/v1/models/`,
   `/v1/models?x=1`) route instead of 404ing.
+- Dead clients die silently: disconnects mid-upload, mid-headers, or
+  mid-body are swallowed instead of printing pages of traceback
+  (verified with RST-kill abuse: server alive, log clean).
 
 ## Limitations
 

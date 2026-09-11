@@ -33,7 +33,7 @@ import time
 import urllib.request
 import urllib.error
 
-__version__ = "1.7.7"
+__version__ = "1.7.8"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
@@ -951,6 +951,11 @@ def _usage(inp, outp):
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
 
 
+class _ClientGone(Exception):
+    """The downstream client disconnected mid-response. Swallowed silently
+    (socketserver would otherwise print a full traceback per dead client)."""
+
+
 def make_handler(cfg):
     from http.server import BaseHTTPRequestHandler
 
@@ -967,7 +972,11 @@ def make_handler(cfg):
             # Browser/Electron fetch contexts need CORS headers to read
             # responses at all; harmless everywhere else.
             self.send_header("Access-Control-Allow-Origin", "*")
-            super().end_headers()
+            try:
+                super().end_headers()
+            except OSError as e:
+                # Headers can't flush: client is gone. Abort quietly.
+                raise _ClientGone() from e
 
         def do_OPTIONS(self):
             self.send_response(200)
@@ -1026,6 +1035,13 @@ def make_handler(cfg):
             return self.path.split("?", 1)[0].rstrip("/") or "/"
 
         def do_GET(self):
+            try:
+                self._handle_get()
+            except (_ClientGone, ConnectionResetError, BrokenPipeError,
+                    ConnectionAbortedError):
+                pass
+
+        def _handle_get(self):
             path = self._route_path()
             if path in ("/v1/models", "/models"):
                 self._send_json(self._models_payload())
@@ -1342,6 +1358,13 @@ def make_handler(cfg):
                              "detail": str(last_error)}, 502)
 
         def do_POST(self):
+            try:
+                self._handle_post()
+            except (_ClientGone, ConnectionResetError, BrokenPipeError,
+                    ConnectionAbortedError):
+                pass
+
+        def _handle_post(self):
             path = self._route_path()
             if path in ("/v1/messages", "/messages"):
                 self._forward("/messages")
