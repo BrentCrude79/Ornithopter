@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""zen-claude-proxy: local Anthropic-compatible front for OpenCode Zen.
+"""ornithopter: local Anthropic-compatible front for OpenCode Zen.
 
 Exposes Zen models on 127.0.0.1 under official Anthropic model names so
 Claude Code (and any Anthropic SDK client) accepts it as a local
 inference point. Stdlib only — runs on Windows, macOS, Linux.
 
 Examples:
-  python zen-claude-proxy.py --key sk-zen-... --port 8646
-  python zen-claude-proxy.py --key sk-zen-... --override claude-opus-4-5
-  python zen-claude-proxy.py --key sk-zen-... --override claude-sonnet-4-5 --upstream claude-sonnet-4-5
+  python ornithopter.py --key sk-zen-... --port 8646
+  python ornithopter.py --key sk-zen-... --override claude-opus-4-5
+  python ornithopter.py --key sk-zen-... --override claude-sonnet-4-5 --upstream claude-sonnet-4-5
 
 Then point Claude Code at it:
   set ANTHROPIC_BASE_URL=http://127.0.0.1:8646
@@ -40,7 +40,7 @@ ANTHROPIC_CATALOG = [
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
-        prog="zen-claude-proxy",
+        prog="ornithopter",
         description="Local Anthropic-compatible proxy for OpenCode Zen "
                     "with spoofable model names for Claude Code.",
     )
@@ -68,7 +68,7 @@ def make_handler(cfg):
     from http.server import BaseHTTPRequestHandler
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "zen-claude-proxy/1.0"
+        server_version = "ornithopter/1.0"
         protocol_version = "HTTP/1.1"
 
         def log_message(self, *a):
@@ -207,7 +207,7 @@ def main(argv=None):
     from http.server import HTTPServer
     handler = make_handler(cfg)
     srv = HTTPServer((args.host, args.port), handler)
-    print("zen-claude-proxy on http://%s:%d  override=%s  upstream=%s  "
+    print("ornithopter on http://%s:%d  override=%s  upstream=%s  "
           "key=%s" % (args.host, args.port, cfg["override"],
                       cfg["upstream"],
                       "set" if cfg["key"] else "missing"), flush=True)
