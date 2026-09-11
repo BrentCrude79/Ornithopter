@@ -33,7 +33,7 @@ import time
 import urllib.request
 import urllib.error
 
-__version__ = "1.7.4"
+__version__ = "1.7.5"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
@@ -576,8 +576,8 @@ def responses_to_anthropic(resp, req_model):
     return {"id": "msg_" + rid.replace("resp_", ""), "type": "message",
             "role": "assistant", "model": req_model, "content": content,
             "stop_reason": stop, "stop_sequence": None,
-            "usage": {"input_tokens": usage.get("input_tokens", 0) or 0,
-                      "output_tokens": usage.get("output_tokens", 0) or 0}}
+            "usage": _usage((usage.get("input_tokens") or 0),
+                            (usage.get("output_tokens") or 0))}
 
 
 class ResponsesStreamToAnthropic:
@@ -610,8 +610,7 @@ class ResponsesStreamToAnthropic:
                             "role": "assistant", "model": self.req_model,
                             "content": [], "stop_reason": None,
                             "stop_sequence": None,
-                            "usage": {"input_tokens": 0,
-                                      "output_tokens": 0}}}))
+                            "usage": _usage(0, 0)}}))
         elif t == "response.output_item.added":
             item = data.get("item", {}) or {}
             iid = str(item.get("id", ""))
@@ -658,19 +657,16 @@ class ResponsesStreamToAnthropic:
             out.append(self._ev({"type": "message_delta",
                                  "delta": {"stop_reason": stop,
                                            "stop_sequence": None},
-                                 "usage": {
-                                     "input_tokens": u.get("input_tokens",
-                                                           0) or 0,
-                                     "output_tokens": u.get("output_tokens",
-                                                            0) or 0}}))
+                                 "usage": _usage(
+                                     (u.get("input_tokens") or 0),
+                                     (u.get("output_tokens") or 0))}))
             out.append(self._ev({"type": "message_stop"}))
             self.done = True
         elif t in ("response.failed", "response.incomplete"):
             out.append(self._ev({"type": "message_delta",
                                  "delta": {"stop_reason": "end_turn",
                                            "stop_sequence": None},
-                                 "usage": {"input_tokens": 0,
-                                           "output_tokens": 0}}))
+                                 "usage": _usage(0, 0)}))
             out.append(self._ev({"type": "message_stop"}))
             self.done = True
         return out
@@ -682,7 +678,7 @@ class ResponsesStreamToAnthropic:
         return [self._ev({"type": "message_delta",
                           "delta": {"stop_reason": "end_turn",
                                     "stop_sequence": None},
-                          "usage": {"input_tokens": 0, "output_tokens": 0}}),
+                          "usage": _usage(0, 0)}),
                 self._ev({"type": "message_stop"})]
 
 
@@ -831,9 +827,8 @@ def chat_to_anthropic(resp, req_model):
     return {"id": "msg_" + rid.replace("chatcmpl-", ""), "type": "message",
             "role": "assistant", "model": req_model, "content": content,
             "stop_reason": stop, "stop_sequence": None,
-            "usage": {"input_tokens": usage.get("prompt_tokens", 0) or 0,
-                      "output_tokens": usage.get("completion_tokens",
-                                                 0) or 0}}
+            "usage": _usage((usage.get("prompt_tokens") or 0),
+                            (usage.get("completion_tokens") or 0))}
 
 
 class ChatStreamToAnthropic:
@@ -846,7 +841,7 @@ class ChatStreamToAnthropic:
         self.tool_index = {}  # openai tool index -> anthropic block index
         self.tool_meta = {}   # anthropic block index -> {id, name, started}
         self.next_tool_block = 1
-        self.usage = {"input_tokens": 0, "output_tokens": 0}
+        self.usage = _usage(0, 0)
         self.stop = "end_turn"
         self.done = False
 
@@ -870,13 +865,11 @@ class ChatStreamToAnthropic:
                             "role": "assistant", "model": self.req_model,
                             "content": [], "stop_reason": None,
                             "stop_sequence": None,
-                            "usage": {"input_tokens": 0,
-                                      "output_tokens": 0}}}))
+                            "usage": _usage(0, 0)}}))
         if isinstance(data.get("usage"), dict):
             u = data["usage"]
-            self.usage = {"input_tokens": u.get("prompt_tokens", 0) or 0,
-                          "output_tokens": u.get("completion_tokens",
-                                                 0) or 0}
+            self.usage = _usage((u.get("prompt_tokens") or 0),
+                                (u.get("completion_tokens") or 0))
         choices = data.get("choices", []) or []
         choice = choices[0] if choices and isinstance(choices[0],
                                                       dict) else {}
@@ -952,6 +945,12 @@ class ChatStreamToAnthropic:
             self._ev({"type": "message_stop"})]
 
 
+def _usage(inp, outp):
+    """Full Anthropic usage shape — strict clients read the cache keys."""
+    return {"input_tokens": inp or 0, "output_tokens": outp or 0,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+
+
 def make_handler(cfg):
     from http.server import BaseHTTPRequestHandler
 
@@ -990,13 +989,13 @@ def make_handler(cfg):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-        def _models_payload(self):
-            # Advertise the override name; merge the live upstream catalog
-            # (public endpoint) so OpenAI-style clients see everything too.
-            # Free-only mode filters the merged list to free-tier IDs so
-            # clients never discover (or bill) a paid model.
+        def _catalog_payload(self):
+            # OpenAI-shaped "data" plus an Ollama-shaped "models" array,
+            # like llama.cpp serves — whichever shape the client reads,
+            # the override alias is first with completion capability.
             models = [{"id": cfg["override"], "object": "model",
-                       "created": 0, "owned_by": "anthropic"}]
+                       "created": 0, "owned_by": "anthropic",
+                       "aliases": [cfg["override"]]}]
             try:
                 req = urllib.request.Request(
                     cfg["upstream_base"] + "/models",
@@ -1007,14 +1006,25 @@ def make_handler(cfg):
                             continue
                         if cfg["free_only"] and not is_free_id(m["id"]):
                             continue
+                        m.setdefault("aliases", [m["id"]])
                         models.append(m)
             except Exception:
                 pass
-            return {"object": "list", "data": models}
+            ollama = [{"name": m["id"], "model": m["id"], "modified_at": "",
+                       "size": 0, "digest": "", "details": {},
+                       "capabilities": ["completion"]} for m in models]
+            return {"object": "list", "data": models, "models": ollama}
+
+        def _models_payload(self):
+            return self._catalog_payload()
 
         def do_GET(self):
             if self.path in ("/v1/models", "/models"):
                 self._send_json(self._models_payload())
+            elif self.path in ("/api/tags", "/api/ps"):
+                # Ollama-style catalog for clients that read it.
+                self._send_json({"models": self._catalog_payload()[
+                    "models"]})
             elif self.path in ("/", "/health", "/v1/health"):
                 self._send_json({"status": "ok", "override": cfg["override"],
                                  "upstream": cfg["upstream"],
