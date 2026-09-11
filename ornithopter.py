@@ -32,7 +32,7 @@ import time
 import urllib.request
 import urllib.error
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
