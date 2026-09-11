@@ -33,7 +33,7 @@ import time
 import urllib.request
 import urllib.error
 
-__version__ = "1.7.3"
+__version__ = "1.7.4"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
@@ -1089,6 +1089,13 @@ def make_handler(cfg):
                     self.wfile.write(data)
                 except (BrokenPipeError, ConnectionResetError):
                     pass
+                if cfg.get("verbose"):
+                    try:
+                        print("reply: %r" % (data[:500].decode(
+                            "utf-8", errors="replace"),), flush=True,
+                            file=sys.stderr)
+                    except Exception:
+                        pass
 
         def _passthrough_error(self, e):
             data = e.read()
@@ -1131,6 +1138,13 @@ def make_handler(cfg):
                     self.wfile.write(body)
                 except (BrokenPipeError, ConnectionResetError):
                     pass
+                if cfg.get("verbose"):
+                    try:
+                        print("reply: %r" % (body[:500].decode(
+                            "utf-8", errors="replace"),), flush=True,
+                            file=sys.stderr)
+                    except Exception:
+                        pass
                 return
             self.send_response(200)
             self.send_header("Connection", "close")

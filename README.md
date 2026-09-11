@@ -138,7 +138,7 @@ OPENROUTER_API_KEY=sk-or-... python ornithopter.py --port 9000
 | `--launch-target` | `claude` | What to launch: exe / Store alias / protocol, or a UWP AppID containing `!` (via `shell:AppsFolder`). Setting it implies `--launch`. |
 | `--save` | | Save effective options to `ornithopter.ini` next to the script, then keep running. |
 | `--no-config` | | Ignore `ornithopter.ini` even if present. |
-| `--verbose` | off | Log every request (method, path, model, redacted headers, first 500 body chars, upstream attempts) to stderr. Upstream failures always log. |
+| `--verbose` | off | Log every request (method, path, model, redacted headers, first 500 body chars) and reply, plus upstream attempts, to stderr. Upstream failures always log. |
 | `--upstream-base` | `https://openrouter.ai/api/v1` | Upstream base URL (OpenRouter or compatible). |
 | `--transport` | `auto` | Force the upstream API shape (`messages`, `chat`, `responses`) instead of detecting it. |
 | `--retries` | `1` | Retries of the same model on HTTP 429 when a `Retry-After` hint is present (waits up to 60s). Hintless 429s fail over immediately. `0` disables. |
