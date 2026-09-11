@@ -149,6 +149,10 @@ def parse_args(argv=None):
     p.add_argument("--allow-paid", action="store_true",
                    help="Disable the free-tier-only guard (students: leave "
                         "it off — paid model IDs can spend real credits).")
+    p.add_argument("--direct", action="store_true",
+                   help="Disable Messages->Responses translation: always "
+                        "rename-and-forward untouched (for models that "
+                        "speak /messages natively, or debugging).")
     p.add_argument("--verbose", action="store_true",
                    help="Log every request (method, path, model, upstream "
                         "attempts and statuses) to stderr. Failures are "
@@ -269,6 +273,253 @@ def launch_app(target):
         print("launch failed: %s" % e, file=sys.stderr)
 
 
+# Model families Zen serves via the Responses API (Hermes routes these
+# with codex_responses internally): anything else goes direct.
+RESPONSES_PREFIXES = ("gpt-", "grok-", "muse-spark")
+
+
+def needs_responses_transport(mid):
+    return (mid or "").lower().startswith(RESPONSES_PREFIXES)
+
+
+def _text_of(block):
+    if isinstance(block, str):
+        return block
+    if isinstance(block, dict) and block.get("type") in (
+            "text", "input_text", "output_text"):
+        return block.get("text", "") or ""
+    return ""
+
+
+def anthropic_to_responses(payload, model_id):
+    """Anthropic Messages request -> OpenAI Responses request."""
+    out = {"model": model_id}
+    system = payload.get("system")
+    if isinstance(system, str) and system:
+        out["instructions"] = system
+    elif isinstance(system, list):
+        out["instructions"] = "".join(_text_of(b) for b in system)
+    req_input = []
+    for msg in payload.get("messages", []) or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        blocks = content if isinstance(content, list) else [content]
+        user_parts, asst_parts, calls, outputs = [], [], [], []
+        for b in blocks:
+            if isinstance(b, str):
+                (asst_parts if role == "assistant" else user_parts).append(
+                    {"type": "output_text" if role == "assistant"
+                     else "input_text", "text": b})
+            elif isinstance(b, dict):
+                t = b.get("type")
+                if t == "text":
+                    (asst_parts if role == "assistant" else user_parts).append(
+                        {"type": "output_text" if role == "assistant"
+                         else "input_text", "text": b.get("text", "") or ""})
+                elif t == "image":
+                    src = b.get("source", {}) or {}
+                    if src.get("type") == "base64":
+                        user_parts.append({
+                            "type": "input_image",
+                            "image_url": "data:%s;base64,%s" % (
+                                src.get("media_type", "image/png"),
+                                src.get("data", ""))})
+                    elif src.get("type") == "url":
+                        user_parts.append({"type": "input_image",
+                                           "image_url": src.get("url", "")})
+                elif t == "tool_use":
+                    calls.append({"type": "function_call",
+                                  "id": "fc_" + str(b.get("id", "")),
+                                  "call_id": str(b.get("id", "")),
+                                  "name": str(b.get("name", "")),
+                                  "arguments": json.dumps(
+                                      b.get("input", {}))})
+                elif t == "tool_result":
+                    inner = b.get("content")
+                    inner = inner if isinstance(inner, list) else [inner]
+                    outputs.append({
+                        "type": "function_call_output",
+                        "call_id": str(b.get("tool_use_id", "")),
+                        "output": "".join(_text_of(c) for c in inner)})
+        if role == "user" and (user_parts or not outputs):
+            req_input.append({"role": "user", "content": user_parts or [
+                {"type": "input_text", "text": ""}]})
+        if role == "assistant" and asst_parts:
+            req_input.append({"role": "assistant", "content": asst_parts})
+        req_input.extend(calls)
+        req_input.extend(outputs)
+    out["input"] = req_input
+    if isinstance(payload.get("max_tokens"), int):
+        out["max_output_tokens"] = payload["max_tokens"]
+    for k in ("temperature", "top_p"):
+        if payload.get(k) is not None:
+            out[k] = payload[k]
+    if payload.get("stream") is True:
+        out["stream"] = True
+    tools = []
+    for t in payload.get("tools", []) or []:
+        if isinstance(t, dict) and t.get("name"):
+            tools.append({"type": "function", "name": t["name"],
+                          "description": t.get("description", "") or "",
+                          "parameters": t.get("input_schema",
+                                              {"type": "object"})})
+    if tools:
+        out["tools"] = tools
+    tc = payload.get("tool_choice")
+    if isinstance(tc, dict):
+        if tc.get("type") == "auto":
+            out["tool_choice"] = "auto"
+        elif tc.get("type") == "any":
+            out["tool_choice"] = "required"
+        elif tc.get("type") == "tool":
+            out["tool_choice"] = {"type": "function",
+                                  "name": tc.get("name", "")}
+    return out
+
+
+def responses_to_anthropic(resp, req_model):
+    """OpenAI Responses object -> Anthropic Messages object."""
+    rid = str(resp.get("id", ""))
+    content, stop = [], "end_turn"
+    for item in resp.get("output", []) or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "message":
+            for c in item.get("content", []) or []:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "output_text":
+                    content.append({"type": "text",
+                                    "text": c.get("text", "") or ""})
+                elif c.get("type") == "refusal":
+                    content.append({"type": "text",
+                                    "text": c.get("refusal", "") or ""})
+        elif item.get("type") == "function_call":
+            try:
+                fargs = json.loads(item.get("arguments") or "{}")
+            except Exception:
+                fargs = {}
+            content.append({"type": "tool_use",
+                            "id": str(item.get("call_id")
+                                      or item.get("id") or ""),
+                            "name": str(item.get("name", "")),
+                            "input": fargs})
+    if str(resp.get("status") or "completed") == "incomplete":
+        stop = "max_tokens"
+    usage = resp.get("usage") or {}
+    return {"id": "msg_" + rid.replace("resp_", ""), "type": "message",
+            "role": "assistant", "model": req_model, "content": content,
+            "stop_reason": stop,
+            "usage": {"input_tokens": usage.get("input_tokens", 0) or 0,
+                      "output_tokens": usage.get("output_tokens", 0) or 0}}
+
+
+class ResponsesStreamToAnthropic:
+    """Feeds OpenAI Responses SSE data payloads (dicts), yields Anthropic
+    SSE byte chunks."""
+
+    def __init__(self, req_model):
+        self.req_model = req_model
+        self.msg_id = None
+        self.item_index = {}
+        self.next_tool_index = 1
+        self.done = False
+
+    def _ev(self, obj):
+        return ("data: %s\n\n" % json.dumps(obj, separators=(",", ":"))).encode()
+
+    def feed(self, data):
+        out = []
+        t = data.get("type") if isinstance(data, dict) else None
+        if t == "response.created":
+            r = data.get("response", {}) or {}
+            self.msg_id = "msg_" + str(r.get("id", "")).replace("resp_", "")
+            out.append(self._ev({
+                "type": "message_start",
+                "message": {"id": self.msg_id, "type": "message",
+                            "role": "assistant", "model": self.req_model,
+                            "content": [], "stop_reason": None,
+                            "usage": {"input_tokens": 0,
+                                      "output_tokens": 0}}}))
+        elif t == "response.output_item.added":
+            item = data.get("item", {}) or {}
+            iid = str(item.get("id", ""))
+            if item.get("type") == "message":
+                self.item_index[iid] = 0
+                out.append(self._ev({"type": "content_block_start",
+                                     "index": 0, "content_block": {
+                                         "type": "text", "text": ""}}))
+            elif item.get("type") == "function_call":
+                idx = self.next_tool_index
+                self.next_tool_index += 1
+                self.item_index[iid] = idx
+                out.append(self._ev({"type": "content_block_start",
+                                     "index": idx, "content_block": {
+                                         "type": "tool_use",
+                                         "id": str(item.get("call_id")
+                                                   or iid),
+                                         "name": str(item.get("name", "")),
+                                         "input": {}}}))
+        elif t == "response.output_text.delta":
+            idx = self.item_index.get(str(data.get("item_id")), 0)
+            out.append(self._ev({"type": "content_block_delta",
+                                 "index": idx, "delta": {
+                                     "type": "text_delta",
+                                     "text": data.get("delta", "") or ""}}))
+        elif t == "response.function_call_arguments.delta":
+            idx = self.item_index.get(str(data.get("item_id")), 1)
+            out.append(self._ev({"type": "content_block_delta",
+                                 "index": idx, "delta": {
+                                     "type": "input_json_delta",
+                                     "partial_json": data.get("delta",
+                                                              "") or ""}}))
+        elif t in ("response.output_text.done", "response.output_item.done"):
+            item = data.get("item", {}) or {}
+            key = str(item.get("id", "") or data.get("item_id", ""))
+            out.append(self._ev({"type": "content_block_stop",
+                                 "index": self.item_index.get(key, 0)}))
+        elif t == "response.completed":
+            r = data.get("response", {}) or {}
+            u = r.get("usage") or {}
+            stop = ("max_tokens"
+                    if str(r.get("status") or "") == "incomplete"
+                    else "end_turn")
+            out.append(self._ev({"type": "message_delta",
+                                 "delta": {"stop_reason": stop,
+                                           "stop_sequence": None},
+                                 "usage": {
+                                     "input_tokens": u.get("input_tokens",
+                                                           0) or 0,
+                                     "output_tokens": u.get("output_tokens",
+                                                            0) or 0}}))
+            out.append(self._ev({"type": "message_stop"}))
+            out.append(b"data: [DONE]\n\n")
+            self.done = True
+        elif t in ("response.failed", "response.incomplete"):
+            out.append(self._ev({"type": "message_delta",
+                                 "delta": {"stop_reason": "end_turn",
+                                           "stop_sequence": None},
+                                 "usage": {"input_tokens": 0,
+                                           "output_tokens": 0}}))
+            out.append(self._ev({"type": "message_stop"}))
+            out.append(b"data: [DONE]\n\n")
+            self.done = True
+        return out
+
+    def finish(self):
+        if self.done:
+            return []
+        self.done = True
+        return [self._ev({"type": "message_delta",
+                          "delta": {"stop_reason": "end_turn",
+                                    "stop_sequence": None},
+                          "usage": {"input_tokens": 0, "output_tokens": 0}}),
+                self._ev({"type": "message_stop"}),
+                b"data: [DONE]\n\n"]
+
+
 def make_handler(cfg):
     from http.server import BaseHTTPRequestHandler
 
@@ -386,6 +637,58 @@ def make_handler(cfg):
             self.end_headers()
             self.wfile.write(data)
 
+        def _relay_translated(self, req, req_model, stream):
+            """Relay a Responses-API upstream, converting to Anthropic
+            Messages shape (object or SSE stream)."""
+            upstream = urllib.request.urlopen(req, timeout=300)
+            if not stream:
+                resp = json.loads(upstream.read().decode())
+                body = json.dumps(responses_to_anthropic(resp,
+                                                         req_model)).encode()
+                self.send_response(200)
+                self.send_header("Connection", "close")
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+            self.send_response(200)
+            self.send_header("Connection", "close")
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            tr = ResponsesStreamToAnthropic(req_model)
+            try:
+                buf = b""
+                while True:
+                    chunk = upstream.read(8192)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        line = line.strip()
+                        if not line.startswith(b"data:"):
+                            continue
+                        payload_s = line[5:].strip()
+                        if payload_s == b"[DONE]":
+                            continue
+                        try:
+                            data = json.loads(payload_s.decode())
+                        except Exception:
+                            continue
+                        for piece in tr.feed(data):
+                            self.wfile.write(piece)
+                        self.wfile.flush()
+                for piece in tr.finish():
+                    self.wfile.write(piece)
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
         def _forward(self, upstream_path):
             raw = self._read_body()
             try:
@@ -431,21 +734,44 @@ def make_handler(cfg):
             attempts = ([cfg["upstream"]] + cfg["fallbacks"]
                         if spoofed else [None])
             last_error = "no attempts made"
+            req_name = (incoming if isinstance(incoming, str)
+                        else cfg["override"])
             for i, attempt in enumerate(attempts):
+                use_path = upstream_path
+                translate = False
                 try:
                     body = raw
                     if payload is not None and attempt is not None:
-                        # Rewrite the spoofed name to this attempt's Zen id.
-                        payload["model"] = attempt
-                        body = json.dumps(payload).encode()
+                        if (upstream_path.endswith("/messages")
+                                and not cfg.get("direct")
+                                and needs_responses_transport(attempt)):
+                            # Model lives on the Responses API: translate the
+                            # whole request instead of just renaming it.
+                            rbody = anthropic_to_responses(payload, attempt)
+                            body = json.dumps(rbody).encode()
+                            use_path = "/responses"
+                            translate = True
+                        else:
+                            # Rewrite the spoofed name to this attempt's Zen id.
+                            payload["model"] = attempt
+                            body = json.dumps(payload).encode()
                 except Exception as e:
                     self._send_json({"error": "bad_request",
                                      "detail": str(e)}, 400)
                     return
                 tag = attempt if attempt is not None else "passthrough"
+                if translate and cfg.get("verbose"):
+                    print("translated messages->responses for %s" % tag,
+                          flush=True, file=sys.stderr)
                 try:
-                    self._relay(urllib.request.urlopen(
-                        self._make_request(upstream_path, body), timeout=300))
+                    req = self._make_request(use_path, body)
+                    if translate:
+                        self._relay_translated(
+                            req, req_name,
+                            bool(payload.get("stream"))
+                            if isinstance(payload, dict) else False)
+                    else:
+                        self._relay(urllib.request.urlopen(req, timeout=300))
                     if cfg.get("verbose"):
                         print("upstream %s -> 200" % tag, flush=True,
                               file=sys.stderr)
@@ -498,6 +824,7 @@ def main(argv=None):
            "fallbacks": [f.strip() for f in args.fallback.split(",")
                          if f.strip()],
            "free_only": not args.allow_paid,
+           "direct": args.direct,
            "verbose": args.verbose,
            "key": args.key.strip()}
     if cfg["free_only"]:

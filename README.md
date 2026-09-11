@@ -131,7 +131,8 @@ ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 | `--key` | `$ZEN_API_KEY` | Zen API key, attached upstream as `x-api-key` + bearer. Local clients may send any placeholder. |
 | `--override` | `claude-sonnet-4-5` | Model name advertised in `/v1/models` and accepted from clients. Warns if not in the known Anthropic catalog. |
 | `--upstream` | `muse-spark-1.3-contributor-free` | Real Zen model id to forward to. Free-tier only unless `--allow-paid`. |
-| `--allow-paid` | off | Disable the free-tier guard. Students: leave it off — paid IDs can spend real credits. |
+| `--allow-paid` | off | Disable the free-tier-only guard. Students: leave it off — paid IDs can spend real credits. |
+| `--direct` | off | Disable Messages→Responses translation (rename-and-forward only). For models speaking `/messages` natively, or debugging. |
 | `--fallback` | _(none)_ | Comma-separated fallback Zen model IDs, first-last priority. On 429, 5xx, timeout, or connection error the request is retried with the next ID. |
 | `--list-models` | | Print the live upstream catalog (one ID per line) and exit. |
 | `--launch` | off | Launch the Claude app once the proxy is healthy. Target from `--launch-target` (or ini). |
@@ -204,6 +205,32 @@ anonymous calls fail (`OpenCode's free tier can only be used in
 OpenCode`). A standalone localhost proxy can't mint that context, so a
 personal Zen key (free tier) remains required — the guard makes sure
 that key can only ever touch free models.
+
+## Messages↔Responses translation
+
+Some Zen models (Muse Spark, GPT-, Grok- families — the same split
+Hermes uses internally) are served via the **Responses API**, not
+`/messages`. Pointing Claude's Messages calls at them returns Zen's
+opaque 500, so Ornithopter translates per attempt:
+
+- **Request:** `system` → `instructions`, messages → `input`
+  (text/tool_use/tool_result/image blocks mapped), `max_tokens` →
+  `max_output_tokens`, tools + `tool_choice` converted, `stream`
+  passed through. The call goes to `/responses` with the real model ID.
+- **Response:** converted back to an Anthropic message (or Anthropic
+  SSE event stream: `message_start` → deltas → `message_delta` →
+  `message_stop` → `[DONE]`), with the *requested* model name echoed
+  so picky clients accept it.
+- Translation is per fallback link: a translated attempt that 500s
+  falls over to the next link, translated or direct, by the normal
+  chain rules. `--direct` disables it entirely.
+
+Verified against a scripted Responses-shaped dummy: text+tools
+round-trip (tool IDs preserved both ways), full streaming event
+sequence terminating cleanly, and a mixed chain (translated 500 →
+direct 200). Honest limit: the Zen Responses dialect itself is
+untested here (no Zen key in this environment) — first real run
+against Spark confirms the last mile.
 
 ## Config file (`ornithopter.ini`)
 
