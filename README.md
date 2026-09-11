@@ -93,6 +93,8 @@ curl http://127.0.0.1:8646/v1/models  # override name must be first entry
 
 If Claude Code rejects the model, the name it sends doesn't equal `--override` — set `ANTHROPIC_MODEL` explicitly (Option A/B) rather than relying on its default.
 
+**Port must match:** Claude's base URL port and `--port` must be the same number. If you start the proxy with `--port 8080`, the base URL is `http://127.0.0.1:8080` — a mismatch just looks like silence.
+
 ## Examples
 
 ```bash
@@ -185,9 +187,11 @@ to a paid model, so it can never run up costs.
   suffixed, minus server-side keyed twins like `ox-alpha-free` —
   Hermes's own exclusion, mirrored here). Violations refuse to start
   (`exit 2`). Offline, it falls back to suffix checking with a warning.
-- The guard also screens **direct** model names: a client naming a paid
-  model outright gets `403 model_not_allowed`, so the guard can't be
-  bypassed from Claude Code's config.
+- The guard also covers **direct** model names: in free-only mode *every*
+  requested model — dated IDs, aliases, anything Claude actually sends —
+  is mapped onto the free chain, so the guard can't be bypassed from
+  Claude Code's config and Claude never gets a rejection for the name
+  it prefers.
 - `/v1/models` only advertises the override alias plus free-tier IDs —
   paid models aren't even discoverable through the proxy.
 - `--allow-paid` disables all of this. Don't set it on student machines.
@@ -253,7 +257,8 @@ running until you Ctrl+C it.
   link's error with its original status.
 - `--save` writes `ornithopter.ini`; a bare rerun loads override/upstream/fallback/port from it; CLI flags beat ini; `--no-config` ignores it.
 - `--launch` waits for `/health` 200 before opening the target (verified with a harmless binary; the UWP `shell:AppsFolder` path is Windows-only and code-reviewed, not live-tested here).
-- Free-tier guard verified live: paid `--upstream` refuses with `exit 2`; `--allow-paid` starts clean; `/v1/models` shows override + 7 free IDs, zero paid; direct paid model → `403 model_not_allowed`; direct free ID forwards (upstream 401 on dummy key, not guard-blocked).
+- Free-tier guard verified live: paid `--upstream` refuses with `exit 2`; `--allow-paid` starts clean; `/v1/models` shows override + 7 free IDs, zero paid; direct paid model names are rewritten onto the free chain (no bypass, no rejection).
+- Dated/aliased model IDs (`claude-opus-4-1-20250805`, arbitrary strings) all rewrite to the chain primary; `stream:true` SSE responses terminate cleanly (~0.9s for a 3-chunk stream) via `Connection: close`.
 
 ## Limitations
 

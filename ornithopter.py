@@ -314,6 +314,10 @@ def make_handler(cfg):
 
         def _relay(self, upstream):
             self.send_response(upstream.status)
+            # No chunked encoding implemented: terminate with connection
+            # close so streaming clients (SSE) see end-of-body instead of
+            # hanging on a keep-alive socket.
+            self.send_header("Connection", "close")
             ctype = upstream.headers.get("Content-Type", "application/json")
             self.send_header("Content-Type", ctype)
             if "text/event-stream" in ctype:
@@ -346,22 +350,15 @@ def make_handler(cfg):
             raw = self._read_body()
             try:
                 payload = json.loads(raw.decode() or "{}")
-                spoofed = payload.get("model") == cfg["override"]
+                incoming = payload.get("model")
             except Exception:
-                payload, spoofed = None, False  # non-JSON: forward untouched
-            # Spoofed requests walk primary + fallbacks in order; anything
-            # else goes through once, untouched — except the free-tier
-            # guard, which also screens direct (non-spoofed) model IDs so
-            # a client can't bypass it by naming a paid model outright.
-            if not spoofed and payload is not None:
-                direct = payload.get("model")
-                if (cfg["free_only"] and direct
-                        and not is_free_id(direct)):
-                    self._send_json(
-                        {"error": "model_not_allowed",
-                         "detail": "%s is not a free-tier model ID "
-                                   "(students guard)" % direct}, 403)
-                    return
+                payload, incoming = None, None  # non-JSON: forward untouched
+            # Free-only mode maps EVERY model name onto the free chain, so
+            # no client can reach (or bill) a paid model whatever it asks
+            # for — Claude sends dated/aliased IDs, not just --override.
+            # With --allow-paid only the override alias is rewritten and
+            # anything else passes through untouched.
+            spoofed = True if cfg["free_only"] else incoming == cfg["override"]
             attempts = ([cfg["upstream"]] + cfg["fallbacks"]
                         if spoofed else [None])
             last_error = "no attempts made"
