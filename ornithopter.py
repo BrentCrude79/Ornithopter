@@ -33,7 +33,7 @@ import time
 import urllib.request
 import urllib.error
 
-__version__ = "1.7.5"
+__version__ = "1.7.6"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
@@ -957,6 +957,8 @@ def make_handler(cfg):
     class Handler(BaseHTTPRequestHandler):
         server_version = "ornithopter/1.0"
         protocol_version = "HTTP/1.1"
+        # Idle keep-alive sockets die instead of leaking threads.
+        timeout = 30
 
         def log_message(self, *a):
             pass
@@ -1404,11 +1406,12 @@ def main(argv=None):
         print("warning: no Zen key given (--key or ZEN_API_KEY); "
               "/v1/models will work but inference will 401 upstream.",
               file=sys.stderr)
-    from http.server import HTTPServer
+    from http.server import ThreadingHTTPServer
     handler = make_handler(cfg)
     if args.save:
         save_ini(args, cfg)
-    srv = HTTPServer((args.host, args.port), handler)
+    srv = ThreadingHTTPServer((args.host, args.port), handler)
+    srv.daemon_threads = True
     print("ornithopter v%s on http://%s:%d  override=%s  upstream=%s  "
           "key=%s" % (__version__, args.host, args.port, cfg["override"],
                       cfg["upstream"],

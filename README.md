@@ -349,6 +349,8 @@ tells you which side rejected it:
   200s become a logged `502 bad_upstream_body` instead of a traceback;
   all writes tolerate disconnects; `Content-Encoding` is never
   mislabeled.
+- Threaded server: one thread per connection (30s idle timeout), so an
+  idle keep-alive socket can never wedge later requests into timeouts.
 
 ## Limitations
 
