@@ -160,14 +160,19 @@ ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 
 ## Fallbacks
 
-`--fallback` takes Zen IDs in first-last priority order. A spoofed
-request tries `--upstream`, then each fallback in turn, when the
-previous attempt hits a rate-limit (429), a 5xx, a timeout, or a
-connection error. Other errors (401, 400, 404) pass straight through —
-retrying those is pointless. Failover happens per request, before any
-response bytes flow; once upstream returns 200 the proxy commits to it.
-If every candidate fails you get `502 {"error": "all upstreams failed"}`
-with the last error attached. `/health` reports the active chain.
+`--fallback` takes Zen IDs in first-last priority order, and each one
+is a real link in the chain: `--upstream A --fallback B,C,D` makes up
+to **four** attempts per spoofed request — A, then B, then C, then D.
+A link is skipped past when it hits a rate-limit (429), a 5xx, a
+timeout, or a connection error, so mixed failures (A 429s, B 500s, C
+answers) still land on C. Other errors (401, 400, 404) pass straight
+through — retrying those is pointless. Failover happens per request,
+before any response bytes flow; once upstream returns 200 the proxy
+commits to it. If the **last** link fails with an HTTP error, that
+error passes through with its original status and body; you only get
+`502 {"error": "all upstreams failed"}` when every link died without
+an HTTP response at all (timeouts, refused connections). `/health`
+reports the active chain.
 
 ## Config file (`ornithopter.ini`)
 
@@ -212,6 +217,10 @@ running until you Ctrl+C it.
 - `POST /v1/messages` with `model: claude-opus-4-5` reaches upstream as `model: claude-sonnet-4-5` (rewrite confirmed against a recording dummy server).
 - `GET /v1/models` against live Zen returns the override first + full catalog (70 entries).
 - SSE relay is chunk-forwarded, not buffered, so `stream: true` clients work.
+- Three-link chain verified against a scripted dummy: primary 429 →
+  fallback 500 → second fallback 200, client got the third link's
+  response; all-bad chain walked every link and returned the last
+  link's error with its original status.
 - `--save` writes `ornithopter.ini`; a bare rerun loads override/upstream/fallback/port from it; CLI flags beat ini; `--no-config` ignores it.
 - `--launch` waits for `/health` 200 before opening the target (verified with a harmless binary; the UWP `shell:AppsFolder` path is Windows-only and code-reviewed, not live-tested here).
 
