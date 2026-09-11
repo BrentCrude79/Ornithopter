@@ -326,8 +326,9 @@ tells you which side rejected it:
   usage flowing into `message_delta`. Field-confirmed against live
   OpenRouter (`--upstream poolside/laguna-s-2.1:free`).
 - Replies are byte-faithful to the Anthropic shape (`stop_sequence`,
-  usage, `msg_` ids, model echo); CORS `*` + `OPTIONS` preflight served
-  for Electron/browser fetch contexts.
+  usage, `msg_` ids, model echo); streams use typed `event:` lines and
+  end at `message_stop` with no OpenAI-style `[DONE]`; CORS `*` +
+  `OPTIONS` preflight served for Electron/browser fetch contexts.
 - `--probe` mechanics verified against a dummy: probes free IDs only, tries chat-first ordering on OpenRouter-style bases, reports serving path.
 - 429 handling verified against scripted throttlers: hinted 429s retried
   to success (3 hits, ~2s); hintless 429 fails straight over to the

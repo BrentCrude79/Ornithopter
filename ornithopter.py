@@ -32,7 +32,7 @@ import time
 import urllib.request
 import urllib.error
 
-__version__ = "1.7.1"
+__version__ = "1.7.2"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
@@ -563,7 +563,11 @@ class ResponsesStreamToAnthropic:
         self.done = False
 
     def _ev(self, obj):
-        return ("data: %s\n\n" % json.dumps(obj, separators=(",", ":"))).encode()
+        # Faithful Anthropic SSE: typed event line + data line. No [DONE]
+        # sentinel — the real API ends with message_stop and hangs up.
+        return ("event: %s\ndata: %s\n\n" % (
+            obj.get("type", "message"),
+            json.dumps(obj, separators=(",", ":")))).encode()
 
     def feed(self, data):
         out = []
@@ -631,7 +635,6 @@ class ResponsesStreamToAnthropic:
                                      "output_tokens": u.get("output_tokens",
                                                             0) or 0}}))
             out.append(self._ev({"type": "message_stop"}))
-            out.append(b"data: [DONE]\n\n")
             self.done = True
         elif t in ("response.failed", "response.incomplete"):
             out.append(self._ev({"type": "message_delta",
@@ -640,7 +643,6 @@ class ResponsesStreamToAnthropic:
                                  "usage": {"input_tokens": 0,
                                            "output_tokens": 0}}))
             out.append(self._ev({"type": "message_stop"}))
-            out.append(b"data: [DONE]\n\n")
             self.done = True
         return out
 
@@ -652,8 +654,7 @@ class ResponsesStreamToAnthropic:
                           "delta": {"stop_reason": "end_turn",
                                     "stop_sequence": None},
                           "usage": {"input_tokens": 0, "output_tokens": 0}}),
-                self._ev({"type": "message_stop"}),
-                b"data: [DONE]\n\n"]
+                self._ev({"type": "message_stop"})]
 
 
 def transport_for(base, mid, force="auto"):
@@ -821,7 +822,11 @@ class ChatStreamToAnthropic:
         self.done = False
 
     def _ev(self, obj):
-        return ("data: %s\n\n" % json.dumps(obj, separators=(",", ":"))).encode()
+        # Faithful Anthropic SSE: typed event line + data line. No [DONE]
+        # sentinel — the real API ends with message_stop and hangs up.
+        return ("event: %s\ndata: %s\n\n" % (
+            obj.get("type", "message"),
+            json.dumps(obj, separators=(",", ":")))).encode()
 
     def feed(self, data):
         out = []
@@ -915,8 +920,7 @@ class ChatStreamToAnthropic:
             "type": "message_delta",
             "delta": {"stop_reason": self.stop, "stop_sequence": None},
             "usage": self.usage}),
-            self._ev({"type": "message_stop"}),
-            b"data: [DONE]\n\n"]
+            self._ev({"type": "message_stop"})]
 
 
 def make_handler(cfg):
