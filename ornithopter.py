@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""ornithopter: local Anthropic-compatible front for free-tier models.
+"""ornithopter: local Anthropic-compatible front for OpenCode Zen.
 
-Exposes free-tier models (OpenRouter :free, OpenCode Zen) on 127.0.0.1
-under official Anthropic model names so
+Exposes Zen models on 127.0.0.1 under official Anthropic model names so
 Claude Code (and any Anthropic SDK client) accepts it as a local
 inference point. Stdlib only — runs on Windows, macOS, Linux.
 
 Examples:
-  python ornithopter.py --key sk-or-... --port 8646
-  python ornithopter.py --key sk-or-... --override claude-opus-4-5
-  python ornithopter.py --key sk-or-... --override claude-sonnet-4-5 --upstream poolside/laguna-s-2.1:free
+  python ornithopter.py --key sk-zen-... --port 8646
+  python ornithopter.py --key sk-zen-... --override claude-opus-4-5
+  python ornithopter.py --key sk-zen-... --override claude-sonnet-4-5 --upstream claude-sonnet-4-5
 
 Then point Claude Code at it:
   set ANTHROPIC_BASE_URL=http://127.0.0.1:8646
   set ANTHROPIC_AUTH_TOKEN=dummy
   (model name on the client must match --override)
 
-Flow: client sends model=<override> -> proxy rewrites to the real
-free-tier model id -> forwards (translated to the model's native API
-shape when needed) with your upstream key ->
+Flow: client sends model=<override> -> proxy rewrites to the real Zen
+model id -> forwards to <upstream-base>/messages with your Zen key ->
 streams the upstream response back untouched.
 """
 import argparse
@@ -38,7 +36,7 @@ __version__ = "1.7.0"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
-# any gateway serves — the proxy rewrites them to real upstream IDs.
+# any gateway serves — the proxy rewrites them to real Zen IDs.
 CLAUDE_CODE_MODELS = [
     "claude-opus-4-5",
     "claude-opus-4-1",
@@ -63,7 +61,7 @@ def is_free_id(mid):
 
 
 def fetch_live_ids(base, timeout=15):
-    """Live upstream catalog IDs, or None when unreachable."""
+    """Live Zen catalog IDs, or None when unreachable."""
     try:
         req = urllib.request.Request(
             base.rstrip("/") + "/models",
@@ -78,8 +76,7 @@ def validate_body(upstream_path, payload):
     """Reject malformed inference bodies locally with a specific 400.
 
     Zen answers bad shapes with an opaque 500, which looks like the
-    proxy (or gateway) is broken (generalized: any upstream may do
-    this). Catch the common cases first so the
+    proxy (or gateway) is broken. Catch the common cases first so the
     client sees what's actually missing.
     """
     if not isinstance(payload, dict):
@@ -103,14 +100,13 @@ def validate_body(upstream_path, payload):
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
         prog="ornithopter",
-        description="Local Anthropic-compatible proxy for free-tier "
-                    "models (OpenRouter, OpenCode Zen) "
+        description="Local Anthropic-compatible proxy for OpenCode Zen "
                     "with spoofable model names for Claude Code.",
         epilog="override choices (names Claude Code accepts): "
                + ", ".join(CLAUDE_CODE_MODELS)
-               + ". --upstream takes any upstream model ID "
-                 "(e.g. poolside/laguna-s-2.1:free); "
-                 "see https://openrouter.ai/models or GET /v1/models "
+               + ". --upstream takes any Zen model ID "
+                 "(e.g. claude-sonnet-4-5, muse-spark-1.3-contributor-free); "
+                 "see https://opencode.ai/zen/v1/models or GET /v1/models "
                  "while running. --list-models prints the live catalog. "
                  "Options load from ornithopter.ini next to the script; "
                  "CLI flags win; --save writes them.",
@@ -1153,7 +1149,7 @@ def make_handler(cfg):
                                 payload["model"] = attempt
                                 body = json.dumps(payload).encode()
                         else:
-                            # Rewrite the spoofed name to this attempt's upstream id.
+                            # Rewrite the spoofed name to this attempt's Zen id.
                             payload["model"] = attempt
                             body = json.dumps(payload).encode()
                 except Exception as e:
@@ -1266,8 +1262,7 @@ def main(argv=None):
             return 1
         return 0
     if not cfg["key"]:
-        print("warning: no upstream key given (--key, OPENROUTER_API_KEY, "
-              "or ZEN_API_KEY); "
+        print("warning: no Zen key given (--key or ZEN_API_KEY); "
               "/v1/models will work but inference will 401 upstream.",
               file=sys.stderr)
     from http.server import HTTPServer
