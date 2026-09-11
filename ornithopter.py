@@ -68,6 +68,31 @@ def fetch_live_ids(base, timeout=15):
         return None
 
 
+def validate_body(upstream_path, payload):
+    """Reject malformed inference bodies locally with a specific 400.
+
+    Zen answers bad shapes with an opaque 500, which looks like the
+    proxy (or gateway) is broken. Catch the common cases first so the
+    client sees what's actually missing.
+    """
+    if not isinstance(payload, dict):
+        return None  # non-JSON: let upstream reject it
+    if not isinstance(payload.get("model"), str):
+        return "missing string 'model'"
+    if upstream_path.endswith("/responses"):
+        if "input" not in payload:
+            return "missing 'input'"
+        return None
+    # /messages and /chat/completions share the messages array shape.
+    msgs = payload.get("messages")
+    if not isinstance(msgs, list) or not msgs:
+        return "missing non-empty 'messages' array"
+    if upstream_path.endswith("/messages") and not isinstance(
+            payload.get("max_tokens"), int):
+        return "missing integer 'max_tokens' (required by the Messages API)"
+    return None
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
         prog="ornithopter",
@@ -367,6 +392,14 @@ def make_handler(cfg):
                 print("POST %s model=%r bytes=%d" % (
                     upstream_path, incoming, len(raw)), flush=True,
                     file=sys.stderr)
+            problem = (validate_body(upstream_path, payload)
+                       if payload is not None else None)
+            if problem:
+                print("rejecting malformed body: %s" % problem, flush=True,
+                      file=sys.stderr)
+                self._send_json({"error": "invalid_request",
+                                 "detail": problem}, 400)
+                return
             # Free-only mode maps EVERY model name onto the free chain, so
             # no client can reach (or bill) a paid model whatever it asks
             # for — Claude sends dated/aliased IDs, not just --override.

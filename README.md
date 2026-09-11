@@ -264,6 +264,10 @@ tells you which side rejected it:
   the proxy passes it through untouched, so the body is Zen's, not ours.
 - Proxy-side crashes now return `400/502` JSON instead of bare 500s;
   malformed bodies, broken pipes, and headerless posts are all handled.
+- Malformed inference bodies are rejected locally with `400
+  invalid_request` naming the missing field (`messages`, `max_tokens`,
+  `input`) — Zen answers these with an opaque 500, so the proxy
+  intercepts them first. Only well-formed requests reach upstream.
 
 ## Verified behavior
 
