@@ -331,6 +331,10 @@ tells you which side rejected it:
   to success (3 hits, ~2s); hintless 429 fails straight over to the
   fallback (2 hits, ~30ms, 200); `--retries 0` passes 429s through
   with a single hit.
+- Relay hardening: gzipped 200s decode transparently; empty/non-JSON
+  200s become a logged `502 bad_upstream_body` instead of a traceback;
+  all writes tolerate disconnects; `Content-Encoding` is never
+  mislabeled.
 
 ## Limitations
 

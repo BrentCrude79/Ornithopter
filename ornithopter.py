@@ -21,6 +21,7 @@ streams the upstream response back untouched.
 """
 import argparse
 import configparser
+import gzip
 import json
 import os
 import shutil
@@ -32,7 +33,7 @@ import time
 import urllib.request
 import urllib.error
 
-__version__ = "1.7.2"
+__version__ = "1.7.3"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
@@ -72,6 +73,34 @@ def retry_after_seconds(exc, cap=60):
         return max(0, min(cap, int(float(raw))))
     except Exception:
         return None
+
+
+def _upstream_line_iter(upstream):
+    """Yield response body lines, transparently gunzipping."""
+    enc = (upstream.headers.get("Content-Encoding") or "").lower()
+    if "gzip" in enc:
+        for line in gzip.decompress(upstream.read()).split(b"\n"):
+            yield line
+        return
+    buf = b""
+    while True:
+        chunk = upstream.read(8192)
+        if not chunk:
+            if buf:
+                yield buf
+            return
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            yield line
+
+
+def _read_upstream_text(upstream):
+    """Full body as text, gunzipping when the upstream encoded it."""
+    data = upstream.read()
+    if "gzip" in (upstream.headers.get("Content-Encoding") or "").lower():
+        data = gzip.decompress(data)
+    return data.decode("utf-8")
 
 
 def fetch_live_ids(base, timeout=15):
@@ -956,7 +985,10 @@ def make_handler(cfg):
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def _models_payload(self):
             # Advertise the override name; merge the live upstream catalog
@@ -1033,6 +1065,10 @@ def make_handler(cfg):
             self.send_header("Connection", "close")
             ctype = upstream.headers.get("Content-Type", "application/json")
             self.send_header("Content-Type", ctype)
+            cenc = upstream.headers.get("Content-Encoding")
+            if cenc:
+                # Never re-label encoded bytes as plain JSON.
+                self.send_header("Content-Encoding", cenc)
             if "text/event-stream" in ctype:
                 # Stream SSE chunks through; connection-close delimited.
                 self.end_headers()
@@ -1058,9 +1094,16 @@ def make_handler(cfg):
             data = e.read()
             self.send_response(e.code)
             self.send_header("Content-Type", "application/json")
+            cenc = e.headers.get("Content-Encoding") if getattr(
+                e, "headers", None) else None
+            if cenc:
+                self.send_header("Content-Encoding", cenc)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def _relay_converted(self, req, req_model, stream, obj_fn,
                              translator_cls):
@@ -1068,8 +1111,17 @@ def make_handler(cfg):
             Anthropic Messages shape (object or SSE stream)."""
             upstream = urllib.request.urlopen(req, timeout=300)
             if not stream:
-                resp = json.loads(upstream.read().decode())
-                body = json.dumps(obj_fn(resp, req_model)).encode()
+                try:
+                    resp = json.loads(_read_upstream_text(upstream))
+                    body = json.dumps(obj_fn(resp, req_model)).encode()
+                except Exception as e:
+                    print("relay failed: unreadable upstream body: %s" % e,
+                          flush=True, file=sys.stderr)
+                    self._send_json(
+                        {"error": "bad_upstream_body",
+                         "detail": "upstream returned 200 with an empty, "
+                                   "non-JSON, or undecodable body"}, 502)
+                    return
                 self.send_response(200)
                 self.send_header("Connection", "close")
                 self.send_header("Content-Type", "application/json")
@@ -1087,32 +1139,28 @@ def make_handler(cfg):
             self.end_headers()
             tr = translator_cls(req_model)
             try:
-                buf = b""
-                while True:
-                    chunk = upstream.read(8192)
-                    if not chunk:
-                        break
-                    buf += chunk
-                    while b"\n" in buf:
-                        line, buf = buf.split(b"\n", 1)
-                        line = line.strip()
-                        if not line.startswith(b"data:"):
-                            continue
-                        payload_s = line[5:].strip()
-                        if payload_s == b"[DONE]":
-                            continue
-                        try:
-                            data = json.loads(payload_s.decode())
-                        except Exception:
-                            continue
-                        for piece in tr.feed(data):
-                            self.wfile.write(piece)
-                        self.wfile.flush()
+                for line in _upstream_line_iter(upstream):
+                    line = line.strip()
+                    if not line.startswith(b"data:"):
+                        continue
+                    payload_s = line[5:].strip()
+                    if payload_s == b"[DONE]":
+                        continue
+                    try:
+                        data = json.loads(payload_s.decode())
+                    except Exception:
+                        continue
+                    for piece in tr.feed(data):
+                        self.wfile.write(piece)
+                    self.wfile.flush()
                 for piece in tr.finish():
                     self.wfile.write(piece)
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 pass
+            except Exception as e:
+                print("relay failed mid-stream: %s" % e, flush=True,
+                      file=sys.stderr)
 
         def _relay_translated(self, req, req_model, stream):
             self._relay_converted(req, req_model, stream,
