@@ -61,13 +61,17 @@ def is_free_id(mid):
 
 
 def retry_after_seconds(exc, cap=60):
-    """Honor the upstream's Retry-After hint (seconds), capped."""
+    """Upstream Retry-After hint in seconds (capped), or None when the
+    header is absent/unparseable — in which case retrying blind just
+    re-hits the limit, so the caller should fail over instead."""
     try:
         headers = getattr(exc, "headers", None)
         raw = (headers.get("Retry-After") or "").strip() if headers else ""
+        if not raw:
+            return None
         return max(0, min(cap, int(float(raw))))
     except Exception:
-        return 0
+        return None
 
 
 def fetch_live_ids(base, timeout=15):
@@ -173,10 +177,11 @@ def parse_args(argv=None):
                         "it (useful for other OpenAI-compatible bases). "
                         "(default: %(default)s)")
     p.add_argument("--retries", type=int, default=1,
-                   help="Retries of the SAME model on HTTP 429, waiting up "
-                        "to 60s per the upstream Retry-After hint, before "
-                        "failing over to the next fallback. 0 disables. "
-                        "(default: %(default)s)")
+                   help="Retries of the SAME model on HTTP 429 when the "
+                        "upstream gives a Retry-After hint (waits up to "
+                        "60s), before failing over to the next fallback. "
+                        "Hintless 429s fail over immediately. 0 disables "
+                        "retries. (default: %(default)s)")
     p.add_argument("--probe", action="store_true",
                    help="Test every free-tier model with a minimal request "
                         "using your key and report what actually serves "
@@ -1224,12 +1229,16 @@ def make_handler(cfg):
                               flush=True, file=sys.stderr)
                         if e.code == 429 and attempt_no < max_retries:
                             wait = retry_after_seconds(e)
-                            attempt_no += 1
-                            print("429, retrying %s in %ss (%d/%d)" % (
-                                tag, wait, attempt_no, max_retries),
-                                flush=True, file=sys.stderr)
-                            time.sleep(wait)
-                            continue
+                            if wait is not None:
+                                attempt_no += 1
+                                print("429, retrying %s in %ss (%d/%d)" % (
+                                    tag, wait, attempt_no, max_retries),
+                                    flush=True, file=sys.stderr)
+                                time.sleep(wait)
+                                continue
+                            print("429 with no Retry-After hint on %s; "
+                                  "failing over instead of retrying blind"
+                                  % tag, flush=True, file=sys.stderr)
                         if ((e.code == 429 or e.code >= 500)
                                 and i < len(attempts) - 1):
                             try:

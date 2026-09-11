@@ -141,7 +141,7 @@ OPENROUTER_API_KEY=sk-or-... python ornithopter.py --port 9000
 | `--verbose` | off | Log every request (method, path, model, redacted headers, first 500 body chars, upstream attempts) to stderr. Upstream failures always log. |
 | `--upstream-base` | `https://openrouter.ai/api/v1` | Upstream base URL (OpenRouter, Zen, or compatible). |
 | `--transport` | `auto` | Force the upstream API shape (`messages`, `chat`, `responses`) instead of detecting it. |
-| `--retries` | `1` | Retries of the same model on HTTP 429, waiting up to 60s per the upstream `Retry-After` hint, before failing over. `0` disables. |
+| `--retries` | `1` | Retries of the same model on HTTP 429 when a `Retry-After` hint is present (waits up to 60s). Hintless 429s fail over immediately. `0` disables. |
 | `--host` | `127.0.0.1` | Bind address. Loopback by default; nothing is exposed to the LAN. |
 | `--port` | `8646` | Bind port. |
 | `-h, --help` | | Full help. |
@@ -329,7 +329,10 @@ tells you which side rejected it:
   usage, `msg_` ids, model echo); CORS `*` + `OPTIONS` preflight served
   for Electron/browser fetch contexts.
 - `--probe` mechanics verified against a dummy: probes free IDs only, tries chat-first ordering on OpenRouter-style bases, reports serving path.
-- 429 handling verified against a scripted throttler: two `Retry-After: 1` rejections then success (3 upstream hits, ~2s); `--retries 0` passes the 429 straight through with a single hit.
+- 429 handling verified against scripted throttlers: hinted 429s retried
+  to success (3 hits, ~2s); hintless 429 fails straight over to the
+  fallback (2 hits, ~30ms, 200); `--retries 0` passes 429s through
+  with a single hit.
 
 ## Limitations
 
