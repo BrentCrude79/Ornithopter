@@ -339,6 +339,10 @@ def make_handler(cfg):
             if self.headers.get("anthropic-version"):
                 req.add_header("anthropic-version",
                                self.headers.get("anthropic-version"))
+            elif upstream_path.endswith("/messages"):
+                # Anthropic APIs require a version; some gateways omit it
+                # and Zen 500s instead of 400ing. Default, don't override.
+                req.add_header("anthropic-version", "2023-06-01")
             return req
 
         def _relay(self, upstream):
@@ -392,6 +396,14 @@ def make_handler(cfg):
                 print("POST %s model=%r bytes=%d" % (
                     upstream_path, incoming, len(raw)), flush=True,
                     file=sys.stderr)
+                try:
+                    hdrs = {k: ("<redacted>" if "key" in k.lower()
+                                or k.lower() == "authorization" else v)
+                            for k, v in self.headers.items()}
+                    print("client headers: %r" % (hdrs,), flush=True,
+                          file=sys.stderr)
+                except Exception:
+                    pass
             problem = (validate_body(upstream_path, payload)
                        if payload is not None else None)
             if problem:

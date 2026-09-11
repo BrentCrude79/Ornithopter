@@ -262,6 +262,13 @@ tells you which side rejected it:
 - HTTP `500` with Zen's `Internal server error` body — Zen rejected the
   request shape itself (seen with missing auth and wrong endpoints);
   the proxy passes it through untouched, so the body is Zen's, not ours.
+- `500` on a *well-formed* request with a *working* key (bad keys give
+  `401`, so a 500 means auth passed) points at a model/endpoint
+  mismatch: e.g. Muse Spark is served via the Responses API, not
+  `/messages` — Hermes routes it that way internally. Confirm with
+  `--allow-paid --upstream claude-haiku-4-5` and the same request: a
+  200 there means the model needs a different endpoint, which is a
+  translation feature, not a config fix.
 - Proxy-side crashes now return `400/502` JSON instead of bare 500s;
   malformed bodies, broken pipes, and headerless posts are all handled.
 - Malformed inference bodies are rejected locally with `400
