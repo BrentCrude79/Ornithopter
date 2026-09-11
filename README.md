@@ -235,9 +235,9 @@ chat; else native Messages) or forced with `--transport`:
 Verified against a scripted Responses-shaped dummy: text+tools
 round-trip (tool IDs preserved both ways), full streaming event
 sequence terminating cleanly, and a mixed chain (translated 500 →
-direct 200). Honest limit: the Zen Responses dialect itself is
-untested here (no Zen key in this environment) — first real run
-against Spark confirms the last mile.
+direct 200). The chat dialect is additionally field-confirmed against
+live OpenRouter. Honest limit: the Zen Responses dialect itself is
+untested here (no Zen key in this environment).
 
 ## Config file (`ornithopter.ini`)
 
@@ -326,7 +326,8 @@ tells you which side rejected it:
 - Chat-dialect verified against a scripted OpenAI-chat dummy: object
   round-trip with `tool_use` (`stop_reason: tool_use`, IDs preserved),
   full streaming tool-call sequence terminating cleanly, `stream_options`
-  usage flowing into `message_delta`.
+  usage flowing into `message_delta`. Field-confirmed against live
+  OpenRouter (`--upstream poolside/laguna-s-2.1:free`).
 - `--probe` mechanics verified against a dummy: probes free IDs only, tries chat-first ordering on OpenRouter-style bases, reports serving path.
 
 ## Limitations
