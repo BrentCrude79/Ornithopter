@@ -60,6 +60,16 @@ def is_free_id(mid):
         and m not in FREE_KEYED_TWINS
 
 
+def retry_after_seconds(exc, cap=60):
+    """Honor the upstream's Retry-After hint (seconds), capped."""
+    try:
+        headers = getattr(exc, "headers", None)
+        raw = (headers.get("Retry-After") or "").strip() if headers else ""
+        return max(0, min(cap, int(float(raw))))
+    except Exception:
+        return 0
+
+
 def fetch_live_ids(base, timeout=15):
     """Live Zen catalog IDs, or None when unreachable."""
     try:
@@ -162,6 +172,11 @@ def parse_args(argv=None):
                    help="Force the upstream API shape instead of detecting "
                         "it (useful for other OpenAI-compatible bases). "
                         "(default: %(default)s)")
+    p.add_argument("--retries", type=int, default=1,
+                   help="Retries of the SAME model on HTTP 429, waiting up "
+                        "to 60s per the upstream Retry-After hint, before "
+                        "failing over to the next fallback. 0 disables. "
+                        "(default: %(default)s)")
     p.add_argument("--probe", action="store_true",
                    help="Test every free-tier model with a minimal request "
                         "using your key and report what actually serves "
@@ -185,7 +200,7 @@ INI_SECTION = "ornithopter"
 # Option keys persisted to the ini, including the API key (plaintext —
 # the user's explicit choice for double-click-to-fly convenience).
 INI_KEYS = ("override", "upstream", "upstream_base", "fallback", "launch",
-            "launch_target", "host", "port", "key", "transport")
+            "launch_target", "host", "port", "key", "transport", "retries")
 
 
 def script_dir():
@@ -308,6 +323,11 @@ def overlay_ini(args, argv=None):
                 "launch_target", "host", "transport"):
         if not given(key) and ini.get(key):
             setattr(args, key, ini.get(key))
+    if not given("retries") and ini.get("retries"):
+        try:
+            args.retries = max(0, int(ini.get("retries") or 0))
+        except ValueError:
+            pass
     # Key precedence: --key flag > OPENROUTER_API_KEY > ZEN_API_KEY > ini.
     # (Env beats ini: only fill from ini when no env key exists.)
     if (not args.key and not given("key") and ini.get("key")
@@ -337,6 +357,7 @@ def save_ini(args, cfg):
         "host": args.host,
         "port": str(args.port),
         "transport": args.transport,
+        "retries": str(args.retries),
         "key": args.key,
     }
     try:
@@ -1161,37 +1182,50 @@ def make_handler(cfg):
                     print("translated messages->%s for %s" % (translate,
                                                               tag),
                           flush=True, file=sys.stderr)
-                try:
-                    req = self._make_request(use_path, body)
-                    stream_out = (bool(payload.get("stream"))
-                                  if isinstance(payload, dict) else False)
-                    if translate == "responses":
-                        self._relay_translated(req, req_name, stream_out)
-                    elif translate == "chat":
-                        self._relay_chat(req, req_name, stream_out)
-                    else:
-                        self._relay(urllib.request.urlopen(req, timeout=300))
-                    if cfg.get("verbose"):
-                        print("upstream %s -> 200" % tag, flush=True,
-                              file=sys.stderr)
-                    return
-                except urllib.error.HTTPError as e:
-                    print("upstream %s -> HTTP %s" % (tag, e.code),
-                          flush=True, file=sys.stderr)
-                    if ((e.code == 429 or e.code >= 500)
-                            and i < len(attempts) - 1):
-                        try:
-                            last_error = "%s: %s" % (e.code, e.read()[:200])
-                        except Exception:
-                            last_error = "HTTP %s" % e.code
-                        continue  # rate-limited / sick: try next candidate
-                    self._passthrough_error(e)
-                    return
-                except Exception as e:
-                    print("upstream %s -> error: %s" % (tag, e),
-                          flush=True, file=sys.stderr)
-                    last_error = str(e)  # timeout/refused: try next
-                    continue
+                max_retries = max(0, cfg.get("retries", 0) or 0)
+                attempt_no = 0
+                while True:
+                    try:
+                        req = self._make_request(use_path, body)
+                        stream_out = (bool(payload.get("stream"))
+                                      if isinstance(payload, dict) else False)
+                        if translate == "responses":
+                            self._relay_translated(req, req_name, stream_out)
+                        elif translate == "chat":
+                            self._relay_chat(req, req_name, stream_out)
+                        else:
+                            self._relay(urllib.request.urlopen(
+                                req, timeout=300))
+                        if cfg.get("verbose"):
+                            print("upstream %s -> 200" % tag, flush=True,
+                                  file=sys.stderr)
+                        return
+                    except urllib.error.HTTPError as e:
+                        print("upstream %s -> HTTP %s" % (tag, e.code),
+                              flush=True, file=sys.stderr)
+                        if e.code == 429 and attempt_no < max_retries:
+                            wait = retry_after_seconds(e)
+                            attempt_no += 1
+                            print("429, retrying %s in %ss (%d/%d)" % (
+                                tag, wait, attempt_no, max_retries),
+                                flush=True, file=sys.stderr)
+                            time.sleep(wait)
+                            continue
+                        if ((e.code == 429 or e.code >= 500)
+                                and i < len(attempts) - 1):
+                            try:
+                                last_error = "%s: %s" % (e.code,
+                                                         e.read()[:200])
+                            except Exception:
+                                last_error = "HTTP %s" % e.code
+                            break  # rate-limited / sick: try next candidate
+                        self._passthrough_error(e)
+                        return
+                    except Exception as e:
+                        print("upstream %s -> error: %s" % (tag, e),
+                              flush=True, file=sys.stderr)
+                        last_error = str(e)  # timeout/refused: try next
+                        break
             self._send_json({"error": "all upstreams failed",
                              "detail": str(last_error)}, 502)
 
@@ -1227,6 +1261,7 @@ def main(argv=None):
            "free_only": not args.allow_paid,
            "direct": args.direct,
            "transport": args.transport,
+           "retries": args.retries,
            "verbose": args.verbose,
            "key": key.strip()}
     if args.probe:

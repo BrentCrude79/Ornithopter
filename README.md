@@ -148,6 +148,7 @@ OPENROUTER_API_KEY=sk-or-... python ornithopter.py --port 9000
 | `--verbose` | off | Log every request (method, path, model, redacted headers, first 500 body chars, upstream attempts) to stderr. Upstream failures always log. |
 | `--upstream-base` | `https://openrouter.ai/api/v1` | Upstream base URL (OpenRouter, Zen, or compatible). |
 | `--transport` | `auto` | Force the upstream API shape (`messages`, `chat`, `responses`) instead of detecting it. |
+| `--retries` | `1` | Retries of the same model on HTTP 429, waiting up to 60s per the upstream `Retry-After` hint, before failing over. `0` disables. |
 | `--host` | `127.0.0.1` | Bind address. Loopback by default; nothing is exposed to the LAN. |
 | `--port` | `8646` | Bind port. |
 | `-h, --help` | | Full help. |
@@ -289,8 +290,11 @@ tells you which side rejected it:
 
 - `upstream <id> -> HTTP 401` — the upstream key is missing/wrong. Check
   `--key` / env / ini.
-- `upstream <id> -> HTTP 429/5xx` with no fallback left — add
-  `--fallback` entries.
+- `upstream <id> -> HTTP 429/5xx` with no fallback left — free tiers
+  throttle hard. Set `--retries 2` (waits out `Retry-After`, default 1)
+  and add `--fallback` entries across *different* free models so one
+  model's quota doesn't stop you, e.g. upstream Laguna + fallback
+  Nemotron-Ultra + Nemotron-Super.
 - `502 {"error": "all upstreams failed"}` — every link died without an
   HTTP response (network/timeout). The `detail` field has the last error.
 - HTTP `500` with an `Internal server error` body — the upstream rejected the
@@ -329,6 +333,7 @@ tells you which side rejected it:
   usage flowing into `message_delta`. Field-confirmed against live
   OpenRouter (`--upstream poolside/laguna-s-2.1:free`).
 - `--probe` mechanics verified against a dummy: probes free IDs only, tries chat-first ordering on OpenRouter-style bases, reports serving path.
+- 429 handling verified against a scripted throttler: two `Retry-After: 1` rejections then success (3 upstream hits, ~2s); `--retries 0` passes the 429 straight through with a single hit.
 
 ## Limitations
 
