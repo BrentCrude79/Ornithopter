@@ -313,7 +313,7 @@ tells you which side rejected it:
 ## Verified behavior
 
 - `POST /v1/messages` with `model: claude-opus-4-5` reaches upstream as `model: claude-sonnet-4-5` (rewrite confirmed against a recording dummy server).
-- `GET /v1/models` against live Zen returns the override first + full catalog (70 entries).
+- `GET /v1/models` returns the override alias first, then only free-tier IDs from the live catalog (spot-checked: override + 7 free, zero paid).
 - SSE relay is chunk-forwarded, not buffered, so `stream: true` clients work.
 - Three-link chain verified against a scripted dummy: primary 429 →
   fallback 500 → second fallback 200, client got the third link's
