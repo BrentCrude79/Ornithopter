@@ -85,6 +85,16 @@ Then start Ornithopter before launching `claude` (or run it as a scheduled task 
 }
 ```
 
+**Claude Code CLI vs Claude Desktop app:** the CLI (`ANTHROPIC_BASE_URL`,
+above) is the standard custom-endpoint path — try it if the Desktop
+dialog blocks you. The Desktop app's developer-mode endpoint shows
+a "model isn't available" dialog even when the proxy returns complete,
+valid 200 replies (confirmed via `reply:` logs: real text content,
+`end_turn`, full usage), which points at the app validating the model
+against Anthropic's own API with the placeholder token — something no
+local proxy can satisfy. Proxy-side, everything is proven; the wall is
+the app's own check.
+
 **Verify before launching `claude`:**
 
 ```bash
