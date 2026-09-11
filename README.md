@@ -7,7 +7,7 @@
 
 **Use free-tier models inside Claude Code — as a local inference point, under official Anthropic model names.**
 
-Claude Code only talks to the Anthropic API and only accepts official Anthropic model names. Ornithopter bridges the gap: a zero-dependency local proxy on `127.0.0.1` that advertises an official Anthropic name, silently rewrites it to a real free-tier model ID, translates between API dialects as needed, and streams the response back untouched. Default fuel is OpenRouter's `:free` tier (key-based, actually serves third parties); OpenCode Zen works too via `--upstream-base`. Zero mana cost, zero dependencies — just a 0/2 flier held together with spare parts.
+Claude Code only talks to the Anthropic API and only accepts official Anthropic model names. Ornithopter bridges the gap: a zero-dependency local proxy on `127.0.0.1` that advertises an official Anthropic name, silently rewrites it to a real free-tier model ID, translates between API dialects as needed, and streams the response back untouched. Default fuel is OpenRouter's `:free` tier (key-based, actually serves third parties); other OpenAI-compatible bases work via `--upstream-base`. Zero mana cost, zero dependencies — just a 0/2 flier held together with spare parts.
 
 ```
 Claude Code  --->  http://127.0.0.1:8646  --->  https://openrouter.ai/api/v1
@@ -25,8 +25,8 @@ Claude Code  --->  http://127.0.0.1:8646  --->  https://openrouter.ai/api/v1
 ## Quick start
 
 ```bash
-# 1. Get an upstream key: openrouter.ai → Keys (free-tier models serve
-#    key-only). Or a Zen key: opencode.ai dashboard -> /connect.
+# 1. Get an upstream key from openrouter.ai → Keys (free-tier models
+#    serve key-only).
 # 2. Run (Windows: ornithopter.bat, same flags)
 python ornithopter.py --key sk-or-...
 
@@ -102,8 +102,8 @@ If Claude Code rejects the model, the name it sends doesn't equal `--override` �
 # Advertise Opus locally, run a free coding model on OpenRouter (default base)
 python ornithopter.py --key sk-or-... --override claude-opus-4-5 --upstream poolside/laguna-s-2.1:free
 
-# Muse Spark on Zen instead (needs --upstream-base + Zen key)
-python ornithopter.py --key sk-zen-... --upstream-base https://opencode.ai/zen/v1 --override claude-sonnet-4-5 --upstream muse-spark-1.3-contributor-free
+# A different free model behind the Opus name
+python ornithopter.py --key sk-or-... --override claude-opus-4-5 --upstream nvidia/nemotron-3-ultra-550b-a55b:free
 
 # Laguna first, Nemotron if it's rate-limited or down
 python ornithopter.py --key sk-or-... --override claude-sonnet-4-5 --upstream poolside/laguna-s-2.1:free --fallback nvidia/nemotron-3-ultra-550b-a55b:free
@@ -126,7 +126,7 @@ OPENROUTER_API_KEY=sk-or-... python ornithopter.py --port 9000
 
 | Flag | Default | Description |
 |---|---|---|
-| `--key` | `$OPENROUTER_API_KEY` / `$ZEN_API_KEY` | Upstream API key. Local clients may use any placeholder bearer. |
+| `--key` | `$OPENROUTER_API_KEY` | Upstream API key. Local clients may use any placeholder bearer. |
 | `--override` | `claude-sonnet-4-5` | Model name advertised locally and accepted from clients. Warns if not in the known Anthropic catalog. |
 | `--upstream` | `poolside/laguna-s-2.1:free` | Real model id to forward to. Free-tier only unless `--allow-paid`. |
 | `--allow-paid` | off | Disable the free-tier-only guard. Students: leave it off — paid IDs can spend real credits. |
@@ -139,7 +139,7 @@ OPENROUTER_API_KEY=sk-or-... python ornithopter.py --port 9000
 | `--save` | | Save effective options to `ornithopter.ini` next to the script, then keep running. |
 | `--no-config` | | Ignore `ornithopter.ini` even if present. |
 | `--verbose` | off | Log every request (method, path, model, redacted headers, first 500 body chars, upstream attempts) to stderr. Upstream failures always log. |
-| `--upstream-base` | `https://openrouter.ai/api/v1` | Upstream base URL (OpenRouter, Zen, or compatible). |
+| `--upstream-base` | `https://openrouter.ai/api/v1` | Upstream base URL (OpenRouter or compatible). |
 | `--transport` | `auto` | Force the upstream API shape (`messages`, `chat`, `responses`) instead of detecting it. |
 | `--retries` | `1` | Retries of the same model on HTTP 429 when a `Retry-After` hint is present (waits up to 60s). Hintless 429s fail over immediately. `0` disables. |
 | `--host` | `127.0.0.1` | Bind address. Loopback by default; nothing is exposed to the LAN. |
@@ -186,9 +186,9 @@ Ornithopter is built for classrooms: by default it can **never** route
 to a paid model, so it can never run up costs.
 
 - `--upstream` / `--fallback` must be free-tier IDs: verified against
-  the **live** catalog at startup (must be listed *and* `-free` (Zen)
-  or `:free` (OpenRouter) suffixed, minus server-side keyed twins
-  like `ox-alpha-free` — Hermes's own exclusion, mirrored here). Violations refuse to start
+  the **live** catalog at startup (must be listed *and* carry a
+  free-tier suffix — `:free`, or legacy `-free` — minus server-side
+  keyed lookalikes). Violations refuse to start
   (`exit 2`). Offline, it falls back to suffix checking with a warning.
 - The guard also covers **direct** model names: in free-only mode *every*
   requested model — dated IDs, aliases, anything Claude actually sends —
@@ -199,13 +199,9 @@ to a paid model, so it can never run up costs.
   paid models aren't even discoverable through the proxy.
 - `--allow-paid` disables all of this. Don't set it on student machines.
 
-Why not just copy Hermes's keyless trick? Hermes rides Zen's free tier
-with empty-bearer + attribution headers *as a registered aggregator* —
-and even that only works with OpenCode session context: direct
-anonymous calls fail (`OpenCode's free tier can only be used in
-OpenCode`). A standalone localhost proxy can't mint that context, so a
-personal Zen key (free tier) remains required — the guard makes sure
-that key can only ever touch free models.
+Why is a key needed for free models? Free tiers don't serve anonymous
+third-party calls — the proxy needs your own OpenRouter key to ride on.
+The guard above makes sure that key can only ever touch free IDs.
 
 ## Messages↔chat/responses translation
 
@@ -230,8 +226,9 @@ Verified against a scripted Responses-shaped dummy: text+tools
 round-trip (tool IDs preserved both ways), full streaming event
 sequence terminating cleanly, and a mixed chain (translated 500 →
 direct 200). The chat dialect is additionally field-confirmed against
-live OpenRouter. Honest limit: the Zen Responses dialect itself is
-untested here (no Zen key in this environment).
+live OpenRouter. Honest limit: the Responses dialect is lab-verified
+only, against a scripted dummy — not against a live Responses-only
+model.
 
 ## Config file (`ornithopter.ini`)
 
@@ -256,7 +253,7 @@ key = sk-or-...
 The API key **is** saved (your explicit choice for double-click-to-fly
 convenience) — in plaintext, so treat the ini like a password file and
 don't commit it to a shared repo. Precedence every run:
-`--key` flag > `OPENROUTER_API_KEY` / `ZEN_API_KEY` env > ini.
+`--key` flag > `OPENROUTER_API_KEY` env > ini.
 
 ## Auto-launch (`--launch`)
 
@@ -304,7 +301,7 @@ tells you which side rejected it:
   malformed bodies, broken pipes, and headerless posts are all handled.
 - Malformed inference bodies are rejected locally with `400
   invalid_request` naming the missing field (`messages`, `max_tokens`,
-  `input`) — Zen answers these with an opaque 500, so the proxy
+  `input`) — some upstreams answer these with an opaque 500, so the proxy
   intercepts them first. Only well-formed requests reach upstream.
 
 ## Verified behavior
@@ -337,12 +334,13 @@ tells you which side rejected it:
 
 ## Limitations
 
-- Zen's free tier is session-locked: as of 2026-09-11, probing every
-  free-tier model on all three endpoint shapes with a personal key
-  serves nothing (`MissingSessionID` / `Model is disabled` /
-  opaque 500s). Free models only flow inside OpenCode sessions, so
-  Ornithopter needs a key with usable entitlement (paid Claude works;
-  `--allow-paid`), or a different upstream entirely.
+- Some free tiers are session-locked to their own app: during
+  development, probing one provider's free models with a personal key
+  served nothing on any endpoint shape (session errors, disabled-model
+  errors, opaque 500s). That's why OpenRouter — whose free tier serves
+  key-based third-party calls — is the default. If you point
+  `--upstream-base` elsewhere and `--probe` comes back empty, the lock
+  is server-side, not a proxy bug.
 
 - Inference requires a real upstream key; `/v1/models` is public and works without one.
 - Ornithopter is inference pass-through only — no agent loop, no tools, no prompt caching. Like the card: it flies, it doesn't fight. Mostly.
