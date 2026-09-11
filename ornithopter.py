@@ -110,9 +110,10 @@ def parse_args(argv=None):
 
 INI_NAME = "ornithopter.ini"
 INI_SECTION = "ornithopter"
-# Option keys persisted to the ini (never the API key).
+# Option keys persisted to the ini, including the API key (plaintext —
+# the user's explicit choice for double-click-to-fly convenience).
 INI_KEYS = ("override", "upstream", "upstream_base", "fallback", "launch",
-            "launch_target", "host", "port")
+            "launch_target", "host", "port", "key")
 
 
 def script_dir():
@@ -144,6 +145,9 @@ def overlay_ini(args, argv=None):
                 "launch_target", "host"):
         if not given(key) and ini.get(key):
             setattr(args, key, ini.get(key))
+    # Key precedence: --key flag > ZEN_API_KEY env > ini.
+    if not args.key and not given("key") and ini.get("key"):
+        args.key = ini.get("key")
     if not given("port") and ini.get("port"):
         try:
             args.port = int(ini.get("port") or 8646)
@@ -155,7 +159,7 @@ def overlay_ini(args, argv=None):
 
 
 def save_ini(args, cfg):
-    """Persist the effective options (never the key) next to the script."""
+    """Persist the effective options (including the key) next to the script."""
     cp = configparser.ConfigParser()
     cp[INI_SECTION] = {
         "override": cfg["override"],
@@ -166,6 +170,7 @@ def save_ini(args, cfg):
         "launch_target": args.launch_target,
         "host": args.host,
         "port": str(args.port),
+        "key": args.key,
     }
     try:
         with open(ini_path(), "w") as f:

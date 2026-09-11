@@ -116,7 +116,7 @@ python ornithopter.py --list-models
 python ornithopter.py --key sk-zen-... \
   --override claude-sonnet-4-5 --upstream muse-spark-1.3-contributor-free \
   --fallback claude-sonnet-4-5 --launch --save
-# next time: just `python ornithopter.py --key sk-zen-...` (or set ZEN_API_KEY)
+# next time: just `python ornithopter.py` — everything (key included) loads from the ini
 
 # Custom port / key from environment
 ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
@@ -133,7 +133,7 @@ ZEN_API_KEY=sk-zen-... python ornithopter.py --port 9000
 | `--list-models` | | Print the live upstream catalog (one ID per line) and exit. |
 | `--launch` | off | Launch the Claude app once the proxy is healthy. Target from `--launch-target` (or ini). |
 | `--launch-target` | `claude` | What to launch: exe / Store alias / protocol, or a UWP AppID containing `!` (via `shell:AppsFolder`). Setting it implies `--launch`. |
-| `--save` | | Save effective options to `ornithopter.ini` next to the script, then keep running. Key is never saved. |
+| `--save` | | Save effective options to `ornithopter.ini` next to the script, then keep running. |
 | `--no-config` | | Ignore `ornithopter.ini` even if present. |
 | `--upstream-base` | `https://opencode.ai/zen/v1` | Upstream base URL (override for testing). |
 | `--host` | `127.0.0.1` | Bind address. Loopback by default; nothing is exposed to the LAN. |
@@ -191,10 +191,13 @@ launch = True
 launch_target = claude
 host = 127.0.0.1
 port = 8646
+key = sk-zen-...
 ```
 
-The API key is **never** saved — it comes from `--key` or `ZEN_API_KEY`
-every run. You can also hand-edit the ini; it's plain configparser.
+The API key **is** saved (your explicit choice for double-click-to-fly
+convenience) — in plaintext, so treat the ini like a password file and
+don't commit it to a shared repo. Precedence every run:
+`--key` flag > `ZEN_API_KEY` env > ini.
 
 ## Auto-launch (`--launch`)
 
