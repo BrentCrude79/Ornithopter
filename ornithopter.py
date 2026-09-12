@@ -24,6 +24,7 @@ import configparser
 import gzip
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -33,7 +34,7 @@ import time
 import urllib.request
 import urllib.error
 
-__version__ = "1.7.9"
+__version__ = "1.8.0"
 
 # Model names Claude Code accepts today (client-facing --override
 # namespace). These are official Anthropic API IDs, independent of what
@@ -103,16 +104,27 @@ def _read_upstream_text(upstream):
     return data.decode("utf-8")
 
 
-def fetch_live_ids(base, timeout=15):
-    """Live Zen catalog IDs, or None when unreachable."""
+def fetch_live_map(base, timeout=15):
+    """Live catalog: model id -> {context_length}. None when unreachable."""
     try:
         req = urllib.request.Request(
             base.rstrip("/") + "/models",
             headers={"User-Agent": "curl/8.0"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return {m["id"] for m in json.loads(r.read())["data"]}
+            out = {}
+            for m in json.loads(r.read()).get("data", []) or []:
+                if isinstance(m, dict) and m.get("id"):
+                    out[m["id"]] = {"context": int(
+                        m.get("context_length") or 0)}
+            return out
     except Exception:
         return None
+
+
+def fetch_live_ids(base, timeout=15):
+    """Live catalog IDs, or None when unreachable."""
+    found = fetch_live_map(base, timeout)
+    return set(found) if found is not None else None
 
 
 def validate_body(upstream_path, payload):
@@ -222,10 +234,22 @@ def parse_args(argv=None):
                         "using your key and report what actually serves "
                         "(status per model). Probes free IDs only — never "
                         "spends. Then exit.")
+    p.add_argument("--smartselect", action="store_true",
+                   help="Rank free-tier models by intelligence (size class, "
+                        "context) sampled for reliability, then write the "
+                        "best as upstream and the next three as fallback "
+                        "into ornithopter.ini. Then exit.")
+    p.add_argument("--samples", type=int, default=3,
+                   help="Probe samples per model for --smartselect "
+                        "reliability stats. (default: %(default)s)")
     p.add_argument("--verbose", action="store_true",
-                   help="Log every request (method, path, model, upstream "
-                        "attempts and statuses) to stderr. Failures are "
-                        "always logged.")
+                   help="Log every request (method, path, model, bodies, "
+                        "replies, upstream attempts and statuses) to "
+                        "stderr. Implies --debug.")
+    p.add_argument("--debug", action="store_true",
+                   help="Log errors and warnings only (upstream failures, "
+                        "rejections, bad bodies). Quieter than --verbose; "
+                        "use it to see why Claude shows 'try again'.")
     p.add_argument("--version", action="version", version="ornithopter "
                    + __version__)
     p.add_argument("--host", default="127.0.0.1",
@@ -343,6 +367,109 @@ def probe_models(cfg):
     return 0
 
 
+def model_size_b(mid):
+    """Parameter class in billions parsed from the model id (e.g. 120b,
+    2.6b, 30b-a3b). 0.0 when the name carries no size — an honest
+    heuristic, documented as such, not a benchmark."""
+    matches = re.findall(r"(\d+(?:\.\d+)?)\s*[bB](?:\b|(?=[^a-zA-Z]))",
+                         str(mid or ""))
+    try:
+        return max([float(x) for x in matches]) if matches else 0.0
+    except Exception:
+        return 0.0
+
+
+def smartselect_models(cfg, samples=3):
+    """Rank free-tier models by intelligence (size class, context) and
+    sampled reliability, then write #1 as upstream and #2-4 as fallback
+    into ornithopter.ini (preserving its other keys)."""
+    catalog = fetch_live_map(cfg["upstream_base"])
+    if catalog is None:
+        print("error: could not fetch the live catalog", file=sys.stderr)
+        return 1
+    free = sorted(m for m in catalog if is_free_id(m))
+    if not free:
+        print("no free-tier models in the live catalog")
+        return 1
+    print("%d free-tier models x %d samples; probing..." % (len(free),
+                                                             samples))
+    mini = {"model": "probe", "max_tokens": 1,
+            "messages": [{"role": "user", "content": "."}]}
+    rows = []
+    for mid in free:
+        translated = anthropic_to_responses(dict(mini, model=mid), mid)
+        chat = {"model": mid, "max_tokens": 1,
+                "messages": [{"role": "user", "content": "."}]}
+        bodies = {"/responses": translated,
+                  "/messages": dict(mini, model=mid),
+                  "/chat/completions": chat}
+        order = {"/responses": ["/responses", "/messages",
+                                "/chat/completions"],
+                 "chat": ["/chat/completions", "/messages", "/responses"],
+                 "messages": ["/messages", "/chat/completions",
+                              "/responses"]}[
+                                  transport_for(cfg["upstream_base"], mid,
+                                                cfg.get("transport"))]
+        wins, lat_sum, best_path = 0, 0.0, "-"
+        tries = 0
+        for _ in range(max(1, samples)):
+            for path in order:
+                start = time.time()
+                status, _ = probe_once(cfg["upstream_base"], path,
+                                       bodies[path], cfg["key"], timeout=25)
+                elapsed = time.time() - start
+                tries += 1
+                if status == 200:
+                    wins += 1
+                    lat_sum += elapsed
+                    if best_path == "-":
+                        best_path = path
+                    break
+                time.sleep(0.5)
+            time.sleep(0.5)
+        rate = wins / tries if tries else 0.0
+        rows.append({"model": mid, "size": model_size_b(mid),
+                     "context": catalog[mid]["context"],
+                     "rate": rate,
+                     "lat": (lat_sum / wins) if wins else float("inf"),
+                     "path": best_path})
+    serving = [r for r in rows if r["rate"] > 0]
+    if not serving:
+        print("nothing served; keeping current config.", file=sys.stderr)
+        return 1
+    serving.sort(key=lambda r: (r["size"], r["rate"], r["context"],
+                                -r["lat"] if r["lat"] != float("inf")
+                                else float("-inf")), reverse=True)
+    print("%-44s %8s %9s %6s %8s  %s" % ("model", "size-B", "ctx",
+                                         "rate", "avg-ms", "via"))
+    for r in serving:
+        print("%-44s %8.1f %9d %5.0f%% %8.0f  %s" % (
+            r["model"], r["size"], r["context"], r["rate"] * 100,
+            (r["lat"] * 1000) if r["lat"] != float("inf") else -1,
+            r["path"]))
+    dead = [r for r in rows if r["rate"] <= 0]
+    if dead:
+        print("unresponsive: %s" % ", ".join(r["model"] for r in dead))
+    picks = [r["model"] for r in serving[:4]]
+    cp = configparser.ConfigParser()
+    if os.path.exists(ini_path()):
+        cp.read(ini_path())
+    if not cp.has_section(INI_SECTION):
+        cp[INI_SECTION] = {}
+    cp[INI_SECTION]["upstream"] = picks[0]
+    cp[INI_SECTION]["fallback"] = ",".join(picks[1:])
+    cp[INI_SECTION]["upstream_base"] = cfg["upstream_base"].rstrip("/")
+    try:
+        with open(ini_path(), "w") as f:
+            cp.write(f)
+    except OSError as e:
+        elog(cfg, "could not save %s: %s" % (ini_path(), e))
+        return 1
+    print("wrote %s: upstream=%s fallback=%s" % (
+        ini_path(), picks[0], ",".join(picks[1:]) or "(none)"))
+    return 0
+
+
 def overlay_ini(args, argv=None):
     """Fill options from ornithopter.ini when the flag wasn't passed
     on the CLI (CLI flags win over ini over built-in defaults)."""
@@ -412,7 +539,7 @@ def save_ini(args, cfg):
             cp.write(f)
         print("saved %s" % ini_path(), flush=True)
     except OSError as e:
-        print("could not save %s: %s" % (ini_path(), e), file=sys.stderr)
+        elog(cfg, "could not save %s: %s" % (ini_path(), e))
 
 
 def wait_healthy(host, port, timeout=15):
@@ -964,6 +1091,13 @@ def _usage(inp, outp):
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
 
 
+def elog(cfg, msg):
+    """Errors/warnings channel: shown with --debug or --verbose, silent
+    by default so normal runs stay quiet."""
+    if cfg.get("debug") or cfg.get("verbose"):
+        print(msg, flush=True, file=sys.stderr)
+
+
 class _ClientGone(Exception):
     """The downstream client disconnected mid-response. Swallowed silently
     (socketserver would otherwise print a full traceback per dead client)."""
@@ -1186,8 +1320,8 @@ def make_handler(cfg):
                     resp = json.loads(_read_upstream_text(upstream))
                     body = json.dumps(obj_fn(resp, req_model)).encode()
                 except Exception as e:
-                    print("relay failed: unreadable upstream body: %s" % e,
-                          flush=True, file=sys.stderr)
+                    elog(cfg, "relay failed: unreadable upstream body: %s"
+                         % e)
                     self._send_json(
                         {"error": "bad_upstream_body",
                          "detail": "upstream returned 200 with an empty, "
@@ -1237,8 +1371,7 @@ def make_handler(cfg):
             except (BrokenPipeError, ConnectionResetError):
                 pass
             except Exception as e:
-                print("relay failed mid-stream: %s" % e, flush=True,
-                      file=sys.stderr)
+                elog(cfg, "relay failed mid-stream: %s" % e)
 
         def _relay_translated(self, req, req_model, stream):
             self._relay_converted(req, req_model, stream,
@@ -1281,8 +1414,7 @@ def make_handler(cfg):
             problem = (validate_body(upstream_path, payload)
                        if payload is not None else None)
             if problem:
-                print("rejecting malformed body: %s" % problem, flush=True,
-                      file=sys.stderr)
+                elog(cfg, "rejecting malformed body: %s" % problem)
                 self._send_json({"error": "invalid_request",
                                  "detail": problem}, 400)
                 return
@@ -1373,8 +1505,7 @@ def make_handler(cfg):
                             _uncool(attempt)
                         return
                     except urllib.error.HTTPError as e:
-                        print("upstream %s -> HTTP %s" % (tag, e.code),
-                              flush=True, file=sys.stderr)
+                        elog(cfg, "upstream %s -> HTTP %s" % (tag, e.code))
                         if attempt is not None and (e.code == 429
                                                     or e.code >= 500):
                             hint = retry_after_seconds(e)
@@ -1384,14 +1515,17 @@ def make_handler(cfg):
                             wait = retry_after_seconds(e)
                             if wait is not None:
                                 attempt_no += 1
-                                print("429, retrying %s in %ss (%d/%d)" % (
-                                    tag, wait, attempt_no, max_retries),
-                                    flush=True, file=sys.stderr)
+                                if cfg.get("verbose"):
+                                    print("429, retrying %s in %ss (%d/%d)"
+                                          % (tag, wait, attempt_no,
+                                             max_retries),
+                                          flush=True, file=sys.stderr)
                                 time.sleep(wait)
                                 continue
-                            print("429 with no Retry-After hint on %s; "
-                                  "failing over instead of retrying blind"
-                                  % tag, flush=True, file=sys.stderr)
+                            if cfg.get("verbose"):
+                                print("429 with no Retry-After hint on %s; "
+                                      "failing over instead of retrying blind"
+                                      % tag, flush=True, file=sys.stderr)
                         if ((e.code == 429 or e.code >= 500)
                                 and i < len(attempts) - 1):
                             try:
@@ -1403,8 +1537,7 @@ def make_handler(cfg):
                         self._passthrough_error(e)
                         return
                     except Exception as e:
-                        print("upstream %s -> error: %s" % (tag, e),
-                              flush=True, file=sys.stderr)
+                        elog(cfg, "upstream %s -> error: %s" % (tag, e))
                         if attempt is not None:
                             _cool(attempt, cfg.get("cooldown", 0) or 0)
                         last_error = str(e)  # timeout/refused: try next
@@ -1438,10 +1571,11 @@ def main(argv=None):
     args = parse_args(argv)
     args = overlay_ini(args, argv)
     if args.override not in CLAUDE_CODE_MODELS:
-        print("warning: --override '%s' is not a model name Claude Code "
-              "accepts; it may reject it. Accepts: %s"
-              % (args.override, ", ".join(CLAUDE_CODE_MODELS)),
-              file=sys.stderr)
+        if args.debug or args.verbose:
+            print("warning: --override '%s' is not a model name Claude Code "
+                  "accepts; it may reject it. Accepts: %s"
+                  % (args.override, ", ".join(CLAUDE_CODE_MODELS)),
+                  file=sys.stderr)
     key = (args.key or os.environ.get("OPENROUTER_API_KEY", "") or
            os.environ.get("ZEN_API_KEY", ""))
     cfg = {"override": args.override,
@@ -1454,15 +1588,18 @@ def main(argv=None):
            "transport": args.transport,
            "cooldown": args.cooldown,
            "retries": args.retries,
+           "debug": args.debug,
            "verbose": args.verbose,
            "key": key.strip()}
     if args.probe:
         return probe_models(cfg)
+    if args.smartselect:
+        return smartselect_models(cfg, args.samples)
     if cfg["free_only"]:
         live = fetch_live_ids(cfg["upstream_base"])
         if live is None:
-            print("warning: could not verify the live catalog; checking "
-                  "-free suffix only.", file=sys.stderr)
+            elog(cfg, "warning: could not verify the live catalog; "
+                      "checking -free suffix only.")
         problems = []
         for m in [cfg["upstream"]] + cfg["fallbacks"]:
             if live is not None and m not in live:
@@ -1489,9 +1626,9 @@ def main(argv=None):
             return 1
         return 0
     if not cfg["key"]:
-        print("warning: no Zen key given (--key or ZEN_API_KEY); "
-              "/v1/models will work but inference will 401 upstream.",
-              file=sys.stderr)
+        elog(cfg, "warning: no upstream key given (--key, "
+                  "OPENROUTER_API_KEY, or ZEN_API_KEY); /v1/models will "
+                  "work but inference will 401 upstream.")
     from http.server import ThreadingHTTPServer
     handler = make_handler(cfg)
     if args.save:
@@ -1509,8 +1646,7 @@ def main(argv=None):
         if wait_healthy(args.host, args.port):
             launch_app(args.launch_target or "claude")
         else:
-            print("proxy did not become healthy; not launching.",
-                  file=sys.stderr)
+            elog(cfg, "proxy did not become healthy; not launching.")
     try:
         if launch_active:
             threading.Event().wait()

@@ -125,6 +125,9 @@ python ornithopter.py --key sk-or-... --override claude-sonnet-4-5 --upstream po
 # Map what your key can actually run (free IDs only, minimal probes)
 python ornithopter.py --key sk-or-... --probe
 
+# Rank them by smarts + reliability and auto-write the top 4 to the ini
+python ornithopter.py --key sk-or-... --smartselect --samples 3
+
 # See what's actually upstream right now (catalogs rotate)
 python ornithopter.py --list-models
 
@@ -146,13 +149,16 @@ OPENROUTER_API_KEY=sk-or-... python ornithopter.py --port 9000
 | `--allow-paid` | off | Disable the free-tier-only guard. Students: leave it off — paid IDs can spend real credits. |
 | `--direct` | off | Disable Messages→Responses translation (rename-and-forward only). For models speaking `/messages` natively, or debugging. |
 | `--probe` | | Try every free-tier model on `/messages`, `/chat/completions`, and `/responses` with your key; report which path serves. Free IDs only — never spends. Then exit. |
+| `--smartselect` | | Rank free-tier models by size class, context, and sampled reliability; write #1 as upstream and #2–4 as fallback into the ini. Then exit. |
+| `--samples` | `3` | Probe samples per model for `--smartselect`. |
 | `--fallback` | _(none)_ | Comma-separated fallback model IDs, first-last priority. On 429, 5xx, timeout, or connection error the request is retried with the next ID. |
 | `--list-models` | | Print the live upstream catalog (one ID per line) and exit. |
 | `--launch` | off | Launch the Claude app once the proxy is healthy. Target from `--launch-target` (or ini). |
 | `--launch-target` | `claude` | What to launch: exe / Store alias / protocol, or a UWP AppID containing `!` (via `shell:AppsFolder`). Setting it implies `--launch`. |
 | `--save` | | Save effective options to `ornithopter.ini` next to the script, then keep running. |
 | `--no-config` | | Ignore `ornithopter.ini` even if present. |
-| `--verbose` | off | Log every request (method, path, model, redacted headers, first 500 body chars) and reply, plus upstream attempts, to stderr. Upstream failures always log. |
+| `--verbose` | off | Log every request (method, path, model, redacted headers, first 500 body chars) and reply, plus upstream attempts, to stderr. Implies `--debug`. |
+| `--debug` | off | Log errors and warnings only. The quiet way to see why Claude shows "try again". |
 | `--upstream-base` | `https://openrouter.ai/api/v1` | Upstream base URL (OpenRouter or compatible). |
 | `--transport` | `auto` | Force the upstream API shape (`messages`, `chat`, `responses`) instead of detecting it. |
 | `--retries` | `1` | Retries of the same model on HTTP 429 when a `Retry-After` hint is present (waits up to 60s). Hintless 429s fail over immediately. `0` disables. |
@@ -194,6 +200,23 @@ error passes through with its original status and body; you only get
 `502 {"error": "all upstreams failed"}` when every link died without
 an HTTP response at all (timeouts, refused connections). `/health`
 reports the active chain.
+
+## Smartselect (`--smartselect`)
+
+`--probe` tells you what serves; `--smartselect` picks the lineup.
+Every free-tier model is sampled (`--samples`, default 3) for success
+rate, latency, and serving path, then ranked by size class (parsed from
+the model name — an honest heuristic, not a benchmark), reliability,
+and context. #1 becomes `upstream`, #2–4 become `fallback`, written
+into `ornithopter.ini` alongside your existing settings. Unresponsive
+models are listed, not written.
+
+## Log levels
+
+Default runs stay quiet: startup line only. `--debug` adds errors and
+warnings (upstream failures, rejections, bad bodies) — run with this
+when Claude shows "try again" and you want the cause without the flood.
+`--verbose` adds everything (bodies, replies, headers, per-attempt chatter).
 
 ## Sticky failover (`--cooldown`)
 
@@ -360,6 +383,10 @@ tells you which side rejected it:
   to success (3 hits, ~2s); hintless 429 fails straight over to the
   fallback (2 hits, ~30ms, 200); `--retries 0` passes 429s through
   with a single hit.
+- Log levels verified: default silent on failures, `--debug` errors
+  only, `--verbose` full detail.
+- `--smartselect` verified against a dummy catalog: size/context/rate
+  ranking, dead + paid excluded, ini written preserving other keys.
 - Sticky failover verified: throttled primary touched once, then skipped
   (`skipping cooled-down`, straight to fallback); retried automatically
   after `--cooldown` expiry; success clears cooldowns.
